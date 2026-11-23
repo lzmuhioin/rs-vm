@@ -8,6 +8,12 @@
 //! - WATERMARK: 128-bit steganographic watermark
 //! - OPCODE_TABLE: Shuffled opcode mapping for polymorphic VM
 
+// 生成器里大量「按行列下标写入」的矩阵/寄存器表循环（MixingBijection 的 32×32 位矩阵、
+// register_map、WBC 编码表）。改成迭代器会把「哪一维对应哪一维」的布局线索打散，
+// 而这段代码的读者正是要核对按位布局。CI runner 的 clippy 比本机新，会判
+// needless_range_loop（工具链未钉版），故在文件级豁免并留此理由。
+#![allow(clippy::needless_range_loop)]
+
 use std::env;
 use std::fs::File;
 use std::io::{Write, BufWriter};
