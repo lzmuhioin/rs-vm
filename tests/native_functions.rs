@@ -127,7 +127,7 @@ fn test_native_call_chain() {
 fn test_registry_builder() {
     let registry = NativeRegistryBuilder::new()
         .with_function(0, |_| 100)
-        .with_function(1, |args| args.get(0).copied().unwrap_or(0) + 1)
+        .with_function(1, |args| args.first().copied().unwrap_or(0) + 1)
         .with_hash()
         .build();
 

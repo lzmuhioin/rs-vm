@@ -252,7 +252,7 @@ fn test_store8() {
         exec::HALT,
     ];
     let state = execute_with_state(&code, &[]).unwrap();
-    assert!(state.output.len() >= 1);
+    assert!(!state.output.is_empty());
     assert_eq!(state.output[0], 0xAB);
 }
 

@@ -32,7 +32,7 @@ fn main() {
 
     registry.register(0, |_| if inside_vm_check() { 1 } else { 0 }).unwrap();
     registry.register(1, |_| if is_license_valid() { 1 } else { 0 }).unwrap();
-    registry.register(2, |args| { log_error(args.get(0).copied().unwrap_or(0)); 0 }).unwrap();
+    registry.register(2, |args| { log_error(args.first().copied().unwrap_or(0)); 0 }).unwrap();
 
     // 2. VM bytecode that calls these functions
     // Equivalent to:

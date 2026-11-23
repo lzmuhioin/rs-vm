@@ -20,7 +20,7 @@ fn test_build_id_not_zero() {
 #[test]
 fn test_build_timestamp_reasonable() {
     // Timestamp should be after 2024 (1704067200)
-    assert!(BUILD_TIMESTAMP > 1704067200);
+    const { assert!(BUILD_TIMESTAMP > 1704067200) };
 }
 
 #[test]
@@ -95,5 +95,5 @@ fn test_watermark_derived_from_inputs() {
 fn test_build_seq_exists() {
     // Build sequence should be a valid number (0 or higher)
     // In dev mode it defaults to 0
-    assert!(BUILD_SEQ < u32::MAX);
+    const { assert!(BUILD_SEQ < u32::MAX) };
 }

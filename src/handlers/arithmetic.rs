@@ -121,7 +121,7 @@ pub fn handle_dec(state: &mut VmState) -> VmResult<()> {
 pub fn handle_div(state: &mut VmState) -> VmResult<()> {
     let b = state.pop()?;
     let a = state.pop()?;
-    let result = if b == 0 { 0 } else { a / b };
+    let result = a.checked_div(b).unwrap_or(0);
     state.set_zero_flag(result);
     state.push(result)
 }

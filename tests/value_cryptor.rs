@@ -162,7 +162,7 @@ fn test_nested_constants() {
 
 #[test]
 fn test_secret_key_check() {
-    let correct_key = 0x5ECE7_0123_4567;
+    let correct_key = 0x0005_ECE7_0123_4567;
     assert_eq!(secret_key_check(correct_key), 1);
     assert_eq!(secret_key_check(0), 0);
     assert_eq!(secret_key_check(correct_key + 1), 0);

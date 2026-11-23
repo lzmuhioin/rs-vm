@@ -303,7 +303,7 @@ mod tests {
         // Good cipher should have ~50% bit difference (avalanche effect)
         // Allow some variance: 30-70% = 38-90 bits
         assert!(
-            diff_bits >= 30 && diff_bits <= 100,
+            (30..=100).contains(&diff_bits),
             "Avalanche effect: {} bits differ (expected ~64)",
             diff_bits
         );

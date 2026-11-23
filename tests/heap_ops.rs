@@ -978,9 +978,7 @@ mod patterns {
         }
 
         // Sum them: stack has [v0, v1, v2, v3, v4, v5, v6, v7]
-        for _ in 0..7 {
-            code.push(arithmetic::ADD);
-        }
+        code.extend([arithmetic::ADD; 7]);
 
         code.push(exec::HALT);
 

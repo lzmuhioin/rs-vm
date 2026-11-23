@@ -129,7 +129,7 @@ fn test_encrypt_blocks_batch() {
         [2u8; AES_BLOCK_SIZE],
     ];
 
-    let originals = blocks.clone();
+    let originals = blocks;
 
     encrypt_blocks(&mut blocks);
 
@@ -163,7 +163,7 @@ fn test_avalanche_effect() {
     // Good cipher: ~50% bit difference (64 bits for 128-bit block)
     // Allow 30-90 bits variance
     assert!(
-        diff_bits >= 30 && diff_bits <= 100,
+        (30..=100).contains(&diff_bits),
         "Avalanche effect: {} bits differ (expected ~64)",
         diff_bits
     );
@@ -223,10 +223,12 @@ fn test_all_ones_block() {
 #[test]
 fn test_whitebox_table_size_constant() {
     // Verify the constant is reasonable
-    assert!(
-        WHITEBOX_TABLE_SIZE > 500_000,
-        "WHITEBOX_TABLE_SIZE should be > 500KB"
-    );
+    const {
+        assert!(
+            WHITEBOX_TABLE_SIZE > 500_000,
+            "WHITEBOX_TABLE_SIZE should be > 500KB"
+        )
+    };
 }
 
 #[test]

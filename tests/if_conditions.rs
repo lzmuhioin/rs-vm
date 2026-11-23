@@ -723,10 +723,10 @@ fn test_compare_vars_in_loop() {
 
     // Test with 0 as first byte - then check if second > first
     // [0, 5, 3, 1] - 0 not > 0, then 5 > 0 = true -> returns 1
-    let zero_first = 0 | (5 << 8) | (3 << 16) | (1 << 24);
+    let zero_first = (5 << 8) | (3 << 16) | (1 << 24);
     assert_eq!(compare_vars_in_loop(4, zero_first), 1);
 
     // [5, 3, 1, 0] - 5>0=true -> returns 1
-    let normal = 5 | (3 << 8) | (1 << 16) | (0 << 24);
+    let normal = 5 | (3 << 8) | (1 << 16);
     assert_eq!(compare_vars_in_loop(4, normal), 1);
 }

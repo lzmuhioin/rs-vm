@@ -553,8 +553,8 @@ fn test_compound_ops_in_loop() {
 fn test_xor_in_loop() {
     assert_eq!(xor_in_loop(0), 0);
     assert_eq!(xor_in_loop(1), 0);
-    assert_eq!(xor_in_loop(2), 0 ^ 1);
-    assert_eq!(xor_in_loop(5), 0 ^ 1 ^ 2 ^ 3 ^ 4);
+    assert_eq!(xor_in_loop(2), 1); // 0 ^ 1
+    assert_eq!(xor_in_loop(5), 4); // 0 ^ 1 ^ 2 ^ 3 ^ 4
 }
 
 #[test]
