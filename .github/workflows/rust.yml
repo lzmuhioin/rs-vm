@@ -44,4 +44,12 @@ jobs:
       steps:
       - uses: actions/checkout@v4
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+    # 文档/决议门禁：与本地 `./scripts/check.sh --docs-only` 同一条命令
+    docs:
+      runs-on: ubuntu-latest
+      steps:
+      - uses: actions/checkout@v4
+      - name: Docs gates
+        run: ./scripts/check.sh --docs-only

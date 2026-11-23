@@ -11,5 +11,8 @@ build_history.txt
 # macOS
 .DS_Store
 /_bmad
-/docs
+# docs/ 默认不入库，只有协作文档白名单放行
+/docs/*
+!/docs/adr/
+!/docs/subagents.md
 /_bmad-output
