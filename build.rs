@@ -9,12 +9,19 @@
 //! - OPCODE_TABLE: Shuffled opcode mapping for polymorphic VM
 
 use std::env;
+use std::fs;
 use std::fs::File;
 use std::io::{Write, BufWriter};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
+    // 两处 BASE_OPCODES（本文件 / vendor/aegis_vm_macro/src/crypto.rs）必须逐项一致：
+    // 顺序或取值一旦分叉，宏加密用的置换表与运行时解码表就对不上，
+    // 表现是运行期 `E02: E13`（解密失败），而不是编译错误。这里在构建期直接拦下。
+    println!("cargo:rerun-if-changed=vendor/aegis_vm_macro/src/crypto.rs");
+    assert_macro_opcode_table_matches();
+
     // Generate build configuration
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
     let dest_path = Path::new(&out_dir).join("build_config.rs");
@@ -320,11 +327,35 @@ fn generate_build_seed() -> [u8; 32] {
         return seed;
     }
 
-    // No explicit key - generate random seed for this build
-    // Each build will have unique opcodes, encryption, etc.
+    // No explicit key - generate a random seed for this build directory.
+    // 但**同一 target 目录内必须复用已有 seed**：build.rs 会因为 clippy / test 等不同
+    // profile 各跑一次，每次都换 seed 会让已编译好的 proc-macro（宏在编译期读取该文件）
+    // 与运行时解码表错位，运行期表现为 `E02` 解密失败。
+    // 换 target 目录（或 `cargo clean`）自然得到新的置换，逐构建随机性不变。
+    if let Some(seed) = read_shared_seed() {
+        return seed;
+    }
     let seed = generate_random_seed();
     write_shared_seed(&seed);
     seed
+}
+
+/// 读取 target 目录下已有的 shared seed（若存在且格式合法）。
+fn read_shared_seed() -> Option<[u8; 32]> {
+    let out_dir = env::var("OUT_DIR").ok()?;
+    let target_dir = Path::new(&out_dir)
+        .ancestors()
+        .find(|p| p.file_name().is_some_and(|n| n == "target"))?;
+    let text = fs::read_to_string(target_dir.join(".anticheat_build_seed")).ok()?;
+    let text = text.trim();
+    if text.len() != 64 {
+        return None;
+    }
+    let mut seed = [0u8; 32];
+    for (i, byte) in seed.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(seed)
 }
 
 /// Write seed to shared location for vm-macro to read
@@ -2385,4 +2416,68 @@ fn generate_whitebox_config(f: &mut BufWriter<File>, build_seed: &[u8; 32]) {
 
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
+}
+
+/// 从 vendor 宏的 `crypto.rs` 里读出 `BASE_OPCODES` 列表，与本文件的表逐项比对。
+fn assert_macro_opcode_table_matches() {
+    const MACRO_CRYPTO: &str = "vendor/aegis_vm_macro/src/crypto.rs";
+    let source = match fs::read_to_string(MACRO_CRYPTO) {
+        Ok(text) => text,
+        Err(err) => panic!("无法读取 {MACRO_CRYPTO}: {err}"),
+    };
+
+    let mut inside = false;
+    let mut macro_codes: Vec<u8> = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if !inside {
+            if trimmed.starts_with("const BASE_OPCODES") {
+                inside = true;
+            }
+            continue;
+        }
+        if trimmed.starts_with("];") {
+            break;
+        }
+        // 一行里可能有多个 0xNN；先剥掉行尾注释，免得注释里的示例值被算进去
+        let code_part = trimmed.split("//").next().unwrap_or("");
+        for token in code_part.split(|c: char| !c.is_ascii_hexdigit() && c != 'x') {
+            if let Some(hex) = token.strip_prefix("0x") {
+                if let Ok(value) = u8::from_str_radix(hex, 16) {
+                    macro_codes.push(value);
+                }
+            }
+        }
+    }
+
+    let ours: Vec<u8> = BASE_OPCODES.iter().map(|(_, _, value)| *value).collect();
+
+    // 0xFF/0xFE（HALT/HALT_ERR）不参与置换，两端放置位置可以不同，
+    // 但各自必须恰好各有一项；其余 opcode 的顺序必须逐项相同。
+    let is_halt = |v: &u8| *v == 0xFF || *v == 0xFE;
+    // crypto.rs 的列表不含 HALT/HALT_ERR（宏侧另行处理），build.rs 必须各有一项。
+    for (name, value) in [("HALT", 0xFFu8), ("HALT_ERR", 0xFE)] {
+        let found = ours.iter().filter(|v| **v == value).count();
+        assert_eq!(found, 1, "build.rs 里 {name}(0x{value:02X}) 应恰好出现一次，实际 {found} 次");
+    }
+    let macro_shuffled: Vec<u8> = macro_codes.iter().copied().filter(|v| !is_halt(v)).collect();
+    let ours_shuffled: Vec<u8> = ours.iter().copied().filter(|v| !is_halt(v)).collect();
+
+    if macro_shuffled != ours_shuffled {
+        let first_diff = macro_shuffled
+            .iter()
+            .zip(ours_shuffled.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or_else(|| macro_shuffled.len().min(ours_shuffled.len()));
+        panic!(
+            "BASE_OPCODES 两端不一致：{MACRO_CRYPTO} 参与置换的有 {} 项，build.rs 有 {} 项，\n\
+             首个差异在第 {} 项（宏={:?}，本文件={:?}）。\n\
+             两端必须逐项相同且只在末尾追加，否则加密/解码表错位，运行期只会表现为 E02 解密失败。",
+            macro_shuffled.len(),
+            ours_shuffled.len(),
+            first_diff + 1,
+            macro_shuffled.get(first_diff),
+            ours_shuffled.get(first_diff),
+        );
+    }
 }
