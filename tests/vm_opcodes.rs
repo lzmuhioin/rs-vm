@@ -668,13 +668,12 @@ fn test_stack_underflow() {
 
 #[test]
 fn test_invalid_opcode() {
-    // With opcode shuffling, 0xAA may decode to a valid opcode that causes
-    // a different error (like StackUnderflow). We just verify it fails.
-    // True "invalid" would be bytes not mapped to any opcode after decode.
-    let code = [0xAA];
-    let result = execute(&code, &[]);
-    // Should fail with some error (InvalidOpcode, StackUnderflow, etc.)
-    assert!(result.is_err(), "Random opcode byte should cause an error");
+    // opcode 置换每个构建都不同（`.anticheat_build_seed`），写死 0xAA 会随种子
+    // 解码到有效 opcode（返回 Ok）而随机失败。改为扫描全部 256 个字节，
+    // 要求至少存在一个解到未分配 handler、返回 InvalidOpcode 的字节。
+    let found = (0u16..=255)
+        .any(|b| matches!(execute(&[b as u8], &[]), Err(VmError::InvalidOpcode)));
+    assert!(found, "应存在解码到未分配 opcode 并返回 InvalidOpcode 的字节");
 }
 
 #[test]
