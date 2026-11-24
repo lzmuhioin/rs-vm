@@ -32,9 +32,9 @@ aegis_vm_macro 0.2.51 (crates.io 外部 crate) ── 编译期读 .anticheat_bu
 | `src/opcodes.rs` | 规范 opcode 常量（`stack::PUSH_IMM = 0x01` 这类），按类别分子模块；`flags` 转发自 `build_config` |
 | `src/bytecode.rs` | 加密字节码封包：magic/version/flags/build id/timestamp/nonce/tag，`ProtectionLevel`、`BuildInfo` |
 | `src/crypto.rs` | AES-256-GCM（`aes-gcm`）+ HMAC-SHA256 派生，`CryptoContext` |
-| `src/integrity.rs` | 分区域哈希校验 + FNV 常量 |
-| `src/smc.rs` | 自修改代码：执行前解密当前指令、执行后re-加密，`OPCODE_DECODE` 在这里被消费 |
-| `src/whitebox/{cipher,generator,sbox,tables}.rs` | Chow 等白盒 AES；密钥不以明文出现在内存 |
+| `src/integrity.rs` | 分区域哈希校验 + FNV 常量（**未接入引擎**，需在受保护代码里显式调用 `verify_hash`） |
+| `src/smc.rs` | 自修改代码：执行前解密当前指令、执行后重加密，`OPCODE_DECODE` 在这里被消费（**主引擎 `execute()` 不走此模块**，需显式调用 `execute_smc`） |
+| `src/whitebox/{cipher,generator,sbox,tables}.rs` | Chow 等白盒 AES；AES 密钥仅存在于编译期，运行期由白盒表 + 64 KiB 熵池重建（`whitebox_decrypt` 未实现，只有加密方向） |
 | `src/native.rs` | `NativeRegistry` / `NativeFunction`，native id 来自 `build_config::native_ids` |
 | `src/string_obfuscation.rs` | `#[obfuscate_strings]` 的运行时解密与缓存 |
 | `src/async_vm/{engine,executor,yielder}.rs` | `async_vm` 特性下的状态机式执行器（实验性） |

@@ -10,17 +10,17 @@ RustAegis is a research-grade software protection system that compiles Rust code
 
 ## 🚀 Key Features
 
-*   **Virtualization:** Converts Rust AST directly into a custom stack-based VM instruction set with 100+ opcodes.
+*   **Virtualization:** Converts Rust AST directly into a custom stack-based VM instruction set with 96 opcodes.
 *   **Native Function Calls:** External functions called inside `#[vm_protect]` are automatically wrapped and executed. No manual setup required.
 *   **Rich Type Support:** Strings, Vectors/Arrays, integers (signed/unsigned), booleans with proper type tracking.
 *   **Heap Memory:** Dynamic memory allocation with automatic cleanup on scope exit.
 *   **Variable Shadowing:** Full Rust-like scoping with nested block support.
 *   **Polymorphism:** The instruction set mapping (Opcode Table) is randomized for every build via a `.build_seed` artifact.
-*   **Mixed Boolean-Arithmetic (MBA):** Transforms simple arithmetic (`+`, `-`, `^`) into complex, mathematically equivalent boolean expressions.
-*   **Compile-Time Encryption:** Bytecode is encrypted with a unique key per build and decrypted only at runtime.
-*   **White-Box Cryptography (WBC):** AES key derivation uses Chow et al. (2002) scheme - keys are never exposed in memory.
-*   **Anti-Tamper:** Integrated integrity checks ensure the bytecode has not been modified.
-*   **Junk Code Injection:** Inserts dead code and entropy-based instructions to break signature scanning.
+*   **Code Transformations:** instruction substitution (`INC` → `PUSH 1; ADD`, …) at `standard` and `paranoid` level; Mixed Boolean-Arithmetic (`x + y = (x ^ y) + 2 * (x & y)`) and constant encryption **only** at `level = "paranoid"`.
+*   **Compile-Time Encryption:** Bytecode is AES-256-GCM encrypted with a per-build key and decrypted only at runtime.
+*   **White-Box Cryptography (WBC):** AES key derivation uses the Chow et al. (2002) table scheme, so the AES key exists only at compile time and is rebuilt at runtime from generated tables plus a 64 KiB entropy pool. This raises the cost of key recovery; it does not make a derived key unobservable in memory.
+*   **Polymorphic Padding:** Jump-safe junk/NOP padding at function head and tail, with the build watermark embedded steganographically. Function-granular, not instruction-level.
+*   **Integrity Primitives (opt-in):** Region hashes are generated at build time (`IntegrityTable` / `verify_hash`), but the interpreter does not verify automatically — call them from your protected code.
 *   **WASM Support:** Full WebAssembly compatibility for browser and Node.js environments.
 
 ## 📦 Installation
@@ -166,11 +166,34 @@ A single "God Node" (the dispatcher) with edges pointing back to itself. The act
 
 ### Arithmetic Obfuscation (MBA)
 
-Instead of a single `ADD` instruction, the analyst sees a randomized sequence of stack operations implementing mathematically equivalent formulas like:
-`x + y = (x ^ y) + 2 * (x & y)` or `(x | y) + (x & y)`
+At `level = "paranoid"` (only), instead of a single `ADD` instruction the analyst sees a randomized sequence of stack operations implementing mathematically equivalent formulas like:
+`x + y = (x ^ y) + 2 * (x & y)` or `(x | y) + (x & y)`. With the default `standard` level no MBA is emitted.
 
 ![Arithmetic Obfuscation Graph](docs/images/01_arithmetic_flow_graph.png)
 *Figure 3: Even a simple arithmetic function explodes into a complex graph due to MBA transformations and the VM dispatcher overhead.*
+
+## 🛡️ Protection Scope (what is actually wired in)
+
+Several protections in this repository are **implemented but not on the runtime path**. Audited against the code of `v0.2.52`; treat this list as the authoritative statement of what you get.
+
+On the interpreter path (every `#[vm_protect]` call):
+
+*   Per-build opcode permutation (`OPCODE_ENCODE` / `OPCODE_DECODE`) + indirect dispatch table — `src/handlers/dispatch.rs`, called from `src/engine.rs`.
+*   AES-256-GCM bytecode decryption with HMAC-SHA256 derived keys (`src/crypto.rs`) and header validation: magic, format version, build id, length (`src/bytecode.rs`).
+*   White-box key derivation — `src/whitebox/` (`derive_bytecode_key` / `derive_smc_key` / `derive_nonce`).
+*   Per-build randomized constants: `MAGIC`, `FNV_BASIS/PRIME` (32/64), `native_ids`, watermark, `BUILD_ID`.
+*   Instruction budget (`MAX_INSTRUCTIONS`), stack and heap caps (`src/state.rs`).
+*   Native calls routed through a registry table with shuffled IDs (`src/native.rs`).
+
+Implemented but **not** wired in — call them explicitly, or do not count on them:
+
+| Item | Status |
+|---|---|
+| `src/smc.rs` rolling re-encryption engine (`execute_smc`) | The main `execute()` loop does not use it |
+| `src/integrity.rs` region hash table (`IntegrityTable` / `verify_hash`) | No automatic verification in the interpreter |
+| `special::TIMING_CHECK` runtime handler | The proc-macro does not emit it — its `anti_analysis` module is disabled pending jump-offset recalculation |
+| `whitebox::whitebox_decrypt` | `unimplemented!()` — only the encryption direction exists |
+| `REGISTER_MAP` / `REGISTER_REVERSE` / entropy-pool metadata in `build_config` | Generated at build time; not consumed by this crate |
 
 ## ⚡ Performance & Constraints
 

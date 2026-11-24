@@ -7,10 +7,13 @@
 //!
 //! ## Features
 //!
-//! - **Hybrid Architecture**: Stack + Register based for flexibility
-//! - **60+ Opcodes**: Complete instruction set for complex logic
-//! - **Anti-Analysis**: Opaque predicates, timing checks, integrity verification
-//! - **Cross-Platform**: Works on iOS and Android
+//! - **Hybrid Architecture**: Stack + register based for flexibility
+//! - **96 Opcodes**: Complete instruction set for complex logic
+//! - **Anti-Analysis**: Opaque predicates are emitted in polymorphic padding (standard
+//!   level and up); the integrity and timing primitives of this crate are exported but
+//!   not run automatically — call `integrity::verify_hash` (or the `TIMING_CHECK`
+//!   handler) explicitly from protected code
+//! - **Cross-Platform**: x86_64, aarch64, wasm32; `no_std` via `alloc`
 //!
 //! ## Example
 //!
