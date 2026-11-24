@@ -217,6 +217,33 @@ dispatch 少了、字节多了，最终更慢。
 
 保护层确实存在且不该动的部分：`emit_op` 里 10% 概率的 Junk NOP，以及 Standard 以上的指令代入与死代码注入。
 
+### 阶段一七批：语句位置的 if / while / loop / for 不再产出 unit（2026-11-24）
+
+第六批清掉了赋值语句的 unit 后，剩下的固定开销是**控制流语句**：`compile_if` 在无 else 时
+`emit_zero()`，`compile_while` / `compile_loop` / `compile_for_loop` 结尾 `emit_zero()`，
+然后语句层再 `emit_drop()` 丢掉——同样是每条语句 2 条指令 3 字节。
+
+改法：加 `Compiler::discard_stmt_value`，在 `compile_block_stmt` / `compile_block` 的
+`Stmt::Expr` 分支置位，`compile_stmt_expr` 对 `If`/`While`/`Loop`/`ForLoop` 直接调用对应编译器
+且**不再 DROP**；对应编译器在 `discard_stmt_value` 为真时跳过结尾的 unit。
+
+两条踩过的坑（都是全量用例抓到的，单测看不出来）：
+
+1. **if 分支必须同时改成语句语义**：块仍会产出 unit（`compile_block` 末尾的 zero），
+   语句层不再 DROP 就每执行一次 if 体漏 1 个栈值。`eq_in_loop`（if 体只执行 1 次）看不出来，
+   `ne_in_loop`（执行 1999 次）直接 `E03`；改成 `compile_block_stmt(then_block)` 才对齐。
+2. **标记不能泄漏进子表达式**：`result = if a {1} else {2};` 的 RHS 在语句位置编译，标记为真会让
+   这个 `if` 按语句编译而丢值 → 赋值弹空 `E02`。修法是每个控制流编译器入口把标记**取快照后清零**，
+   只对自身生效（`compile_if` / `compile_while` / `compile_loop` / `compile_for_loop` 各一处）。
+
+- 字节预算：`if` 语句 43 → **40**、`while` 语句 31 → **28**（预算 ≤40 / ≤28）；
+- 端到端 A/B（3 轮交替）：`branchy`（循环+分支）208–221x → **167–174x（−21%，1.26x）**，三轮一致；
+  其余负载在噪声内（`arith` 是直线代码、无控制流，其 4% 摆动属构建间抖动）；
+- 门禁 913 passed / 0 failed。
+
+未做：块语句 `{ s = n; }` 的 unit 仍保留——它的值被语句层的无条件 DROP 消费，要动它得同时改造
+语句层的丢弃契约，风险与收益不成比例，留给后续。
+
 ## 备选方案
 
 - **继续铺超级指令**：已到顶。第五轮回边融合把字节码真实压短了 6 条，A/B 无收益，

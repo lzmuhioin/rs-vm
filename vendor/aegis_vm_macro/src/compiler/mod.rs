@@ -215,6 +215,8 @@ pub struct Compiler {
     /// Enable opaque predicates injection
     pub(crate) opaque_predicates_enabled: bool,
     /// Native call collector for external function calls
+    /// 当前是否处于「语句位置」——语句的值会被立刻丢弃，不要产出 unit
+    pub(crate) discard_stmt_value: bool,
     pub(crate) native_collector: NativeCallCollector,
 }
 
@@ -260,6 +262,7 @@ impl Compiler {
             // Opaque predicates enabled for standard+ protection (when substitution is on)
             opaque_predicates_enabled: substitution_enabled,
             native_collector: NativeCallCollector::new(),
+            discard_stmt_value: false,
         }
     }
 
@@ -757,6 +760,31 @@ mod reg_binop_tests {
             "数组读写应走融合访存，实际 {} 字节；若回退到栈序列会明显变长",
             code.len()
         );
+    }
+    /// 语句位置的 `if` / `while` / 块 都不需要产出 unit 再丢掉
+    fn len_if_stmt() -> usize {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn s(n: u64) -> u64 { let mut s = 0u64; if n > 3 { s = 1; } s }
+        })
+        .expect("parse");
+        compile_function_full(&func, false, false).expect("compile").len()
+    }
+
+    fn len_while_stmt() -> usize {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn s(n: u64) -> u64 { let mut i = 0u64; while i < n { i = i + 1; } i }
+        })
+        .expect("parse");
+        compile_function_full(&func, false, false).expect("compile").len()
+    }
+
+    #[test]
+    fn control_flow_statements_do_not_emit_discarded_unit() {
+        // 实测：现状 if 43 / while 31；去掉语句位置的 unit（3 字节）后为 40 / 28。
+        assert!(len_if_stmt() <= 40, "if 语句白花 unit+drop，实际 {} 字节（目标 ≤40）", len_if_stmt());
+        assert!(len_while_stmt() <= 28, "while 语句白花 unit+drop，实际 {} 字节（目标 ≤28）", len_while_stmt());
+        // 块语句的 unit 仍由语句层的无条件 DROP 消费，这一轮不动：
+        // 去掉它会让 DROP 弹空（全量用例曾报 E04:E02），需要同时改造语句层的丢弃契约。
     }
 }
 

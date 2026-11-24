@@ -14,6 +14,7 @@ use crate::substitution::{
 impl Compiler {
     /// Emit an opcode (automatically encoded via shuffle table)
     pub(crate) fn emit_op(&mut self, base_opcode: u8) {
+
         // Dead Code Insertion
         if self.subst.is_enabled() {
             let table = self.opcode_table.clone();
@@ -37,6 +38,7 @@ impl Compiler {
 
         let shuffled = self.opcode_table.encode(base_opcode);
         self.bytecode.push(shuffled);
+
 
     }
 

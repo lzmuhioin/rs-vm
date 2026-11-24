@@ -10,6 +10,11 @@ impl Compiler {
     /// Compile if expression
     /// if cond { then_block } else { else_block }
     pub(crate) fn compile_if(&mut self, cond: &Expr, then_block: &Block, else_branch: Option<&Expr>) -> Result<(), CompileError> {
+        // 丢弃语义只作用于「这条语句本身」，子表达式一律需要值：
+        // 取快照后立刻清标记，否则 `result = if a {1} else {2};` 会把 if 当语句编译而丢值
+        let discarding = self.discard_stmt_value;
+        self.discard_stmt_value = false;
+
         let else_label = self.unique_label("if_else");
         let end_label = self.unique_label("if_end");
 
@@ -28,8 +33,13 @@ impl Compiler {
             self.emit_jump(control::JZ, &else_label);
         }
 
-        // Then block
-        self.compile_block(then_block)?;
+        // Then block：语句位置不需要值，用语句方式编译（块内每个语句各自丢弃结果，
+        // 末尾不产出 unit），否则分支会留下一个 unit 让调用方去消费
+        if discarding {
+            self.compile_block_stmt(then_block)?;
+        } else {
+            self.compile_block(then_block)?;
+        }
         self.emit_jump(control::JMP, &end_label);
 
         // Else block
@@ -37,7 +47,11 @@ impl Compiler {
         if let Some(else_expr) = else_branch {
             match else_expr {
                 Expr::Block(block) => {
-                    self.compile_block(&block.block)?;
+                    if discarding {
+                        self.compile_block_stmt(&block.block)?;
+                    } else {
+                        self.compile_block(&block.block)?;
+                    }
                 }
                 Expr::If(else_if) => {
                     // else if ...
@@ -48,8 +62,8 @@ impl Compiler {
                     self.compile_expr(else_expr)?;
                 }
             }
-        } else {
-            // No else: push unit (0)
+        } else if !discarding {
+            // No else: push unit (0)（语句位置不需要）
             self.emit_zero();
         }
 
@@ -60,6 +74,9 @@ impl Compiler {
     /// Compile while loop
     /// while cond { body }
     pub(crate) fn compile_while(&mut self, cond: &Expr, body: &Block) -> Result<(), CompileError> {
+        let discarding = self.discard_stmt_value;
+        self.discard_stmt_value = false;
+
         let loop_start = self.unique_label("while_start");
         let loop_end = self.unique_label("while_end");
 
@@ -99,8 +116,10 @@ impl Compiler {
         // Pop loop context
         self.loop_stack.pop();
 
-        // While loops produce unit
-        self.emit_zero();
+        // While loops produce unit（语句位置不需要）
+        if !discarding {
+            self.emit_zero();
+        }
 
         Ok(())
     }
@@ -108,6 +127,9 @@ impl Compiler {
     /// Compile infinite loop
     /// loop { body }
     pub(crate) fn compile_loop(&mut self, body: &Block) -> Result<(), CompileError> {
+        let discarding = self.discard_stmt_value;
+        self.discard_stmt_value = false;
+
         let loop_start = self.unique_label("loop_start");
         let loop_end = self.unique_label("loop_end");
 
@@ -133,8 +155,10 @@ impl Compiler {
         // Pop loop context
         self.loop_stack.pop();
 
-        // Infinite loops produce unit (unless break with value, not supported)
-        self.emit_zero();
+        // Infinite loops produce unit（语句位置不需要）
+        if !discarding {
+            self.emit_zero();
+        }
 
         Ok(())
     }
@@ -142,6 +166,9 @@ impl Compiler {
     /// Compile for loop
     /// for i in start..end { body }
     pub(crate) fn compile_for_loop(&mut self, for_loop: &syn::ExprForLoop) -> Result<(), CompileError> {
+        let discarding = self.discard_stmt_value;
+        self.discard_stmt_value = false;
+
         // Push a scope for the for loop (loop variable lives here)
         self.push_scope();
 
@@ -217,8 +244,10 @@ impl Compiler {
         // Pop scope (for loop variable cleanup)
         self.pop_scope();
 
-        // For loops produce unit
-        self.emit_zero();
+        // For loops produce unit（语句位置不需要）
+        if !discarding {
+            self.emit_zero();
+        }
 
         Ok(())
     }
@@ -286,34 +315,13 @@ impl Compiler {
                     self.register_struct_from_item(item_struct)?;
                 }
                 syn::Stmt::Expr(expr, _) => {
-                    // 语句位置的赋值：结果立刻被丢弃，直接编译赋值本体，
-                    // 省掉 `emit_zero()`（PUSH_IMM8 0）+ `emit_drop()` 这 2 条白花指令。
-                    match expr {
-                        syn::Expr::Assign(assign) => {
-                            self.compile_assignment(&assign.left, &assign.right)?;
-                        }
-                        syn::Expr::Binary(bin)
-                            if matches!(
-                                bin.op,
-                                syn::BinOp::AddAssign(_)
-                                    | syn::BinOp::SubAssign(_)
-                                    | syn::BinOp::MulAssign(_)
-                                    | syn::BinOp::DivAssign(_)
-                                    | syn::BinOp::RemAssign(_)
-                                    | syn::BinOp::BitXorAssign(_)
-                                    | syn::BinOp::BitAndAssign(_)
-                                    | syn::BinOp::BitOrAssign(_)
-                                    | syn::BinOp::ShlAssign(_)
-                                    | syn::BinOp::ShrAssign(_)
-                            ) =>
-                        {
-                            self.compile_assign_op(&bin.left, &bin.op, &bin.right)?;
-                        }
-                        _ => {
-                            self.compile_expr(expr)?;
-                            self.emit_drop();  // Always drop expression result
-                        }
-                    }
+                    // 语句位置的表达式值一律丢弃：置位后 `if`/`while`/`loop`/块
+                    // 不再产出 unit（省 `PUSH_IMM8 0` + `DROP` 共 3 字节）
+                    let saved_discard = self.discard_stmt_value;
+                    self.discard_stmt_value = true;
+                    let result = self.compile_stmt_expr(expr);
+                    self.discard_stmt_value = saved_discard;
+                    result?;
                 }
                 syn::Stmt::Local(local) => {
                     self.compile_local(local)?;
@@ -339,6 +347,53 @@ impl Compiler {
         Ok(())
     }
 
+
+    /// 语句位置的表达式编译（值会被丢弃，不产出 unit）
+    fn compile_stmt_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
+        match expr {
+                        syn::Expr::Assign(assign) => {
+                            self.compile_assignment(&assign.left, &assign.right)?;
+                        }
+                        syn::Expr::Binary(bin)
+                            if matches!(
+                                bin.op,
+                                syn::BinOp::AddAssign(_)
+                                    | syn::BinOp::SubAssign(_)
+                                    | syn::BinOp::MulAssign(_)
+                                    | syn::BinOp::DivAssign(_)
+                                    | syn::BinOp::RemAssign(_)
+                                    | syn::BinOp::BitXorAssign(_)
+                                    | syn::BinOp::BitAndAssign(_)
+                                    | syn::BinOp::BitOrAssign(_)
+                                    | syn::BinOp::ShlAssign(_)
+                                    | syn::BinOp::ShrAssign(_)
+                            ) =>
+                        {
+                            self.compile_assign_op(&bin.left, &bin.op, &bin.right)?;
+                        }
+                        // 控制流语句：`compile_if`/`compile_while` 等在
+                        // discard_stmt_value 为真时不产出 unit，因此不能再 DROP
+                        syn::Expr::If(if_expr) => {
+                            let else_branch = if_expr.else_branch.as_ref().map(|(_, e)| e.as_ref());
+                            self.compile_if(&if_expr.cond, &if_expr.then_branch, else_branch)?;
+                        }
+                        syn::Expr::While(while_expr) => {
+                            self.compile_while(&while_expr.cond, &while_expr.body)?;
+                        }
+                        syn::Expr::Loop(loop_expr) => {
+                            self.compile_loop(&loop_expr.body)?;
+                        }
+                        syn::Expr::ForLoop(for_expr) => {
+                            self.compile_for_loop(for_expr)?;
+                        }
+                        _ => {
+                            self.compile_expr(expr)?;
+                            self.emit_drop();  // Always drop expression result
+                        }
+        }
+        Ok(())
+    }
+
     /// Compile a block as expression (returns value on stack)
     pub(crate) fn compile_block(&mut self, block: &Block) -> Result<(), CompileError> {
         // Push new scope for this block
@@ -361,15 +416,13 @@ impl Compiler {
                 syn::Stmt::Item(Item::Struct(item_struct)) => {
                     self.register_struct_from_item(item_struct)?;
                 }
-                syn::Stmt::Expr(expr, Some(_)) => {
-                    // Expression with semicolon - drop result
-                    self.compile_expr(expr)?;
-                    self.emit_drop();
-                }
-                syn::Stmt::Expr(expr, None) => {
-                    // Expression without semicolon in middle - drop anyway
-                    self.compile_expr(expr)?;
-                    self.emit_drop();
+                syn::Stmt::Expr(expr, _) => {
+                    // 非末尾语句的值一律丢弃：置位后 if/while/loop/块不再产出 unit
+                    let saved_discard = self.discard_stmt_value;
+                    self.discard_stmt_value = true;
+                    let result = self.compile_stmt_expr(expr);
+                    self.discard_stmt_value = saved_discard;
+                    result?;
                 }
                 syn::Stmt::Local(local) => {
                     self.compile_local(local)?;
