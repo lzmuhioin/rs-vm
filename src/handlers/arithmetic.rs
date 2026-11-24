@@ -176,6 +176,63 @@ pub fn handle_add_reg_imm(state: &mut VmState) -> VmResult<()> {
 }
 
 /// ADD_REG_REG: `dst = a + b` (fused, ZF only).
+/// `SUB_REG_REG <dst> <a> <b>`：等价 `PUSH_REG a; PUSH_REG b; SUB; POP_REG dst`（只置 ZF）
+pub fn handle_sub_reg_reg(state: &mut VmState) -> VmResult<()> {
+    let dst = state.read_u8()?;
+    let a = state.read_u8()?;
+    let b = state.read_u8()?;
+    let result = state.get_reg(a)?.wrapping_sub(state.get_reg(b)?);
+    state.set_reg(dst, result)?;
+    state.set_zero_flag(result);
+    Ok(())
+}
+
+/// 读 `dst/a/b` 三个寄存器号并做二元运算，语义与同名栈式 handler 完全一致
+fn binop_reg_reg(
+    state: &mut VmState,
+    op: fn(u64, u64) -> u64,
+) -> VmResult<()> {
+    let dst = state.read_u8()?;
+    let a = state.read_u8()?;
+    let b = state.read_u8()?;
+    let result = op(state.get_reg(a)?, state.get_reg(b)?);
+    state.set_reg(dst, result)?;
+    state.set_zero_flag(result);
+    Ok(())
+}
+
+/// `DIV_REG_REG`：除零得 0，与 `handle_div` 的 `checked_div(..).unwrap_or(0)` 一致
+pub fn handle_div_reg_reg(state: &mut VmState) -> VmResult<()> {
+    binop_reg_reg(state, |a, b| a.checked_div(b).unwrap_or(0))
+}
+
+/// `MOD_REG_REG`：除零得 0，与 `handle_mod` 一致
+pub fn handle_mod_reg_reg(state: &mut VmState) -> VmResult<()> {
+    binop_reg_reg(state, |a, b| if b == 0 { 0 } else { a % b })
+}
+
+pub fn handle_and_reg_reg(state: &mut VmState) -> VmResult<()> {
+    binop_reg_reg(state, |a, b| a & b)
+}
+
+pub fn handle_or_reg_reg(state: &mut VmState) -> VmResult<()> {
+    binop_reg_reg(state, |a, b| a | b)
+}
+
+pub fn handle_xor_reg_reg(state: &mut VmState) -> VmResult<()> {
+    binop_reg_reg(state, |a, b| a ^ b)
+}
+
+/// `SHL_REG_REG`：与栈式 `SHL` 一样用 `wrapping_shl`（移位量按 64 取模）
+pub fn handle_shl_reg_reg(state: &mut VmState) -> VmResult<()> {
+    binop_reg_reg(state, |a, b| a.wrapping_shl(b as u32))
+}
+
+/// `SHR_REG_REG`：与栈式 `SHR` 一样用 `wrapping_shr`
+pub fn handle_shr_reg_reg(state: &mut VmState) -> VmResult<()> {
+    binop_reg_reg(state, |a, b| a.wrapping_shr(b as u32))
+}
+
 pub fn handle_add_reg_reg(state: &mut VmState) -> VmResult<()> {
     let dst = state.read_u8()?;
     let a = state.read_u8()?;

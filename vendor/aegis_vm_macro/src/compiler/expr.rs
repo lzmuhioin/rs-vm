@@ -6,6 +6,7 @@
 use syn::{Expr, BinOp, UnOp};
 use super::{Compiler, CompileError, VarLocation};
 use crate::opcodes::control;
+use super::emit::RegOp;
 
 impl Compiler {
     /// Compile any expression (result pushed to stack)
@@ -1086,12 +1087,12 @@ impl Compiler {
             Expr::Path(_) => self.expr_var_reg(expr).is_some(),
             Expr::Lit(_) => Self::int_lit(expr).is_some(),
             Expr::Binary(b) => {
-                if !matches!(b.op, BinOp::Add(_) | BinOp::Mul(_)) {
+                let Some(op) = RegOp::from_binop(&b.op) else {
                     return false;
-                }
-                // 右侧若是立即数，必须能塞进 u32（融合指令的编码限制）。
+                };
+                // 右侧若是立即数：只有 ADD/MUL 有立即数形式，且必须塞进 u32。
                 if let Some(imm) = Self::int_lit(&b.right) {
-                    if imm > u32::MAX as u64 {
+                    if !op.has_imm_form() || imm > u32::MAX as u64 {
                         return false;
                     }
                 } else if self.expr_var_reg(&b.right).is_none() {
@@ -1128,23 +1129,21 @@ impl Compiler {
                 Ok(())
             }
             Expr::Binary(b) => {
-                let is_add = match b.op {
-                    BinOp::Add(_) => true,
-                    BinOp::Mul(_) => false,
-                    _ => {
-                        return Err(CompileError(
-                            "expr→reg: unsupported binary operator".to_string(),
-                        ))
-                    }
-                };
+                let op = RegOp::from_binop(&b.op).ok_or_else(|| {
+                    CompileError("expr→reg: unsupported binary operator".to_string())
+                })?;
 
                 // 右侧是立即数：dst = dst ⊕ imm
                 if let Some(imm) = Self::int_lit(&b.right) {
                     self.compile_expr_to_reg(&b.left, dst)?;
-                    if is_add {
-                        self.emit_add_reg_imm(dst, imm as u32);
-                    } else {
-                        self.emit_mul_reg_imm(dst, imm as u32);
+                    match op {
+                        RegOp::Add => self.emit_add_reg_imm(dst, imm as u32),
+                        RegOp::Mul => self.emit_mul_reg_imm(dst, imm as u32),
+                        _ => {
+                            return Err(CompileError(
+                                "expr→reg: operator has no immediate form".to_string(),
+                            ))
+                        }
                     }
                     return Ok(());
                 }
@@ -1152,11 +1151,7 @@ impl Compiler {
                 // 右侧是变量：dst = dst ⊕ right
                 if let Some(rreg) = self.expr_var_reg(&b.right) {
                     self.compile_expr_to_reg(&b.left, dst)?;
-                    if is_add {
-                        self.emit_add_reg_reg(dst, dst, rreg);
-                    } else {
-                        self.emit_mul_reg_reg(dst, dst, rreg);
-                    }
+                    self.emit_reg_binop(op, dst, dst, rreg);
                     return Ok(());
                 }
 
@@ -1167,13 +1162,7 @@ impl Compiler {
                 let result = self
                     .compile_expr_to_reg(&b.right, tmp)
                     .and_then(|()| self.compile_expr_to_reg(&b.left, dst))
-                    .map(|()| {
-                        if is_add {
-                            self.emit_add_reg_reg(dst, dst, tmp);
-                        } else {
-                            self.emit_mul_reg_reg(dst, dst, tmp);
-                        }
-                    });
+                    .map(|()| self.emit_reg_binop(op, dst, dst, tmp));
                 self.next_local_reg = saved;
                 result
             }

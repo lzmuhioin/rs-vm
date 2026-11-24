@@ -69,6 +69,15 @@ pub mod control {
     pub const MUL_REG_REG: u8 = 0xA0;
     /// CMP_REG_REG_JCC: fused compare-and-branch with condition selector
     pub const CMP_REG_REG_JCC: u8 = 0xA1;
+    /// 寄存器式二元算术（阶段一）：dst = a OP b，栈中性
+    pub const SUB_REG_REG: u8 = 0xA2;
+    pub const DIV_REG_REG: u8 = 0xA3;
+    pub const MOD_REG_REG: u8 = 0xA4;
+    pub const AND_REG_REG: u8 = 0xA5;
+    pub const OR_REG_REG: u8 = 0xA6;
+    pub const XOR_REG_REG: u8 = 0xA7;
+    pub const SHL_REG_REG: u8 = 0xA8;
+    pub const SHR_REG_REG: u8 = 0xA9;
     pub const JCC_Z: u8 = 0;
     pub const JCC_NZ: u8 = 1;
     pub const JCC_GT: u8 = 2;

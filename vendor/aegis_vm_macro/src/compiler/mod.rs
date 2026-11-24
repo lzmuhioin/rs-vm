@@ -653,6 +653,49 @@ pub fn compile_function_with_natives(func: &ItemFn, mba_enabled: bool, substitut
 }
 
 #[cfg(test)]
+#[cfg(test)]
+mod reg_binop_tests {
+    use super::*;
+    use quote::quote;
+
+    /// 三个二元算子（减法、按位与、按位或）+ 一个返回值
+    fn compile_sample() -> Vec<u8> {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn sample(a: u64, b: u64) -> u64 {
+                let mut x = 0u64;
+                x = a;
+                x = x - b;
+                x = x & b;
+                x = x | b;
+                x = x ^ b;
+                x = x << b;
+                x = x >> b;
+                x = x / b;
+                x = x % b;
+                x
+            }
+        })
+        .expect("parse sample fn");
+        compile_function_full(&func, false, false).expect("compile sample fn")
+    }
+
+    /// 自赋值 `x = x OP b` 的寄存器式形态是 4 字节（一条 `*_REG_REG`），
+    /// 栈式形态是 7 字节（`PUSH_REG x; PUSH_REG b; OP; POP_REG x`）。
+    /// 字节码在 finalize 时会被置换编码，数 opcode 恒为 0，故只能用总长度做判据。
+    #[test]
+    fn self_assignments_use_reg_binop_instructions() {
+        let code = compile_sample();
+        // 实测：寄存器式 81 字节，关掉 8 个算子退回栈式 109 字节。
+        // 预算取 90：留 9 字节余量，仍能抓出「哪怕两条算子回退到栈路径」。
+        assert!(
+            code.len() <= 90,
+            "8 条自赋值的字节码应 ≤90 字节（寄存器式实测 81，栈式 109），实际 {} 字节",
+            code.len()
+        );
+    }
+}
+
+#[cfg(test)]
 mod arg_prologue_tests {
     use super::*;
     use quote::quote;

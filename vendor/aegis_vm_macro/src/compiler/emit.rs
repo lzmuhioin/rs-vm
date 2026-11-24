@@ -535,6 +535,62 @@ impl Compiler {
         self.emit(b);
     }
 
+    /// 8 条寄存器式二元算术统一形状：<op> dst, a, b
+    fn emit_binop_reg_reg(&mut self, opcode: u8, dst: u8, a: u8, b: u8) {
+        self.emit_op(opcode);
+        self.emit(dst);
+        self.emit(a);
+        self.emit(b);
+    }
+
+    /// 寄存器式二元算子的编译期描述：决定可用哪条融合指令、有没有立即数形式
+    pub(crate) fn emit_reg_binop(&mut self, op: RegOp, dst: u8, a: u8, b: u8) {
+        match op {
+            RegOp::Add => self.emit_add_reg_reg(dst, a, b),
+            RegOp::Mul => self.emit_mul_reg_reg(dst, a, b),
+            RegOp::Sub => self.emit_sub_reg_reg(dst, a, b),
+            RegOp::Div => self.emit_div_reg_reg(dst, a, b),
+            RegOp::Mod => self.emit_mod_reg_reg(dst, a, b),
+            RegOp::And => self.emit_and_reg_reg(dst, a, b),
+            RegOp::Or => self.emit_or_reg_reg(dst, a, b),
+            RegOp::Xor => self.emit_xor_reg_reg(dst, a, b),
+            RegOp::Shl => self.emit_shl_reg_reg(dst, a, b),
+            RegOp::Shr => self.emit_shr_reg_reg(dst, a, b),
+        }
+    }
+
+    pub(crate) fn emit_sub_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::SUB_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_div_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::DIV_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_mod_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::MOD_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_and_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::AND_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_or_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::OR_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_xor_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::XOR_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_shl_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::SHL_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_shr_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::SHR_REG_REG, dst, a, b);
+    }
+
     /// MUL_REG_IMM dst, imm:u32
     pub(crate) fn emit_mul_reg_imm(&mut self, dst: u8, imm: u32) {
         self.emit_op(control::MUL_REG_IMM);
@@ -548,5 +604,47 @@ impl Compiler {
         self.emit(dst);
         self.emit(a);
         self.emit(b);
+    }
+}
+
+/// 寄存器式二元算子（阶段一支持的全部算子）。
+///
+/// 与栈式 `arithmetic::*` 一一对应，语义完全一致；只有 `Add`/`Mul` 有立即数融合形式
+/// （`ADD_REG_IMM` / `MUL_REG_IMM`），其余算子只支持寄存器-寄存器形态。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RegOp {
+    Add,
+    Mul,
+    Sub,
+    Div,
+    Mod,
+    And,
+    Or,
+    Xor,
+    Shl,
+    Shr,
+}
+
+impl RegOp {
+    /// `syn` 的二元运算 → 寄存器式算子；不支持的返回 `None`（调用方回退栈序列）
+    pub(crate) fn from_binop(op: &syn::BinOp) -> Option<Self> {
+        Some(match op {
+            syn::BinOp::Add(_) => Self::Add,
+            syn::BinOp::Mul(_) => Self::Mul,
+            syn::BinOp::Sub(_) => Self::Sub,
+            syn::BinOp::Div(_) => Self::Div,
+            syn::BinOp::Rem(_) => Self::Mod,
+            syn::BinOp::BitAnd(_) => Self::And,
+            syn::BinOp::BitOr(_) => Self::Or,
+            syn::BinOp::BitXor(_) => Self::Xor,
+            syn::BinOp::Shl(_) => Self::Shl,
+            syn::BinOp::Shr(_) => Self::Shr,
+            _ => return None,
+        })
+    }
+
+    /// 是否已有 `*_REG_IMM` 形式的融合指令
+    pub(crate) fn has_imm_form(self) -> bool {
+        matches!(self, Self::Add | Self::Mul)
     }
 }

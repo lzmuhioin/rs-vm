@@ -207,6 +207,38 @@ pub mod control {
     /// Format: CMP_REG_REG_JCC <a:u8> <b:u8> <cond:u8> <offset:i16>
     /// cond: 0=JZ 1=JNZ 2=JGT 3=JLT 4=JGE 5=JLE（满足条件时相对跳转）
     pub const CMP_REG_REG_JCC: u8 = 0xA1;
+
+    /// SUB_REG_REG: `dst = a - b`（等价 PUSH_REG a; PUSH_REG b; SUB; POP_REG dst）
+    /// Format: SUB_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const SUB_REG_REG: u8 = 0xA2;
+
+    /// DIV_REG_REG: `dst = a / b`，除零得 0（与 `handle_div` 的 `checked_div(..).unwrap_or(0)` 一致）
+    /// Format: DIV_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const DIV_REG_REG: u8 = 0xA3;
+
+    /// MOD_REG_REG: `dst = a % b`，除零得 0（与 `handle_mod` 一致）
+    /// Format: MOD_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const MOD_REG_REG: u8 = 0xA4;
+
+    /// AND_REG_REG: `dst = a & b`
+    /// Format: AND_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const AND_REG_REG: u8 = 0xA5;
+
+    /// OR_REG_REG: `dst = a | b`
+    /// Format: OR_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const OR_REG_REG: u8 = 0xA6;
+
+    /// XOR_REG_REG: `dst = a ^ b`
+    /// Format: XOR_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const XOR_REG_REG: u8 = 0xA7;
+
+    /// SHL_REG_REG: `dst = a << b`（wrapping_shl，移位量按 64 取模）
+    /// Format: SHL_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const SHL_REG_REG: u8 = 0xA8;
+
+    /// SHR_REG_REG: `dst = a >> b`（wrapping_shr，移位量按 64 取模）
+    /// Format: SHR_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const SHR_REG_REG: u8 = 0xA9;
 }
 
 /// Special Operations (Anti-analysis)
