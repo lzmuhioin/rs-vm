@@ -3,6 +3,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+echo "== toolchain =="
+rustc --version 2>/dev/null || echo "rustc: 不可用"
+cargo --version 2>/dev/null || echo "cargo: 不可用"
+cargo clippy --version 2>/dev/null || echo "clippy: 不可用"
+
 case "${1:-}" in
   --docs-only) docs_only=1 ;;
   "") docs_only=0 ;;

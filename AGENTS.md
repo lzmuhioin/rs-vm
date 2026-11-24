@@ -20,6 +20,7 @@
 
 - **单命令自查 = CI**：`./scripts/check.sh`（clippy `--all-targets -D warnings` → `cargo test` → 文档门禁）。纯文档改动跑 `./scripts/check.sh --docs-only`；门禁自证跑 `python3 scripts/verify-gates.py`。
 - **clippy 必须带 `--all-targets`**：只查 lib/bin 会漏掉 `tests/` 与 examples 的告警；本仓 CI 曾经如此，已修正，见 [docs/adr/accepted/2026-11-23-gate-baseline.md](docs/adr/accepted/2026-11-23-gate-baseline.md)。
+- **clippy 始终追最新 stable**：本机 `rustup update stable`，CI 显式 `dtolnay/rust-toolchain@stable`，都不钉 `rust-toolchain.toml`；`scripts/check.sh` 首行打印版本。CI 报的新 lint 先在更新后的本机复现再真修，禁用 `#[allow]` 掩盖。
 - **`cargo fmt --check` 不进主门禁**：基线有 723 处差异，全仓重排会淹没功能 diff，且本仓未钉 `rust-toolchain.toml`。只格式化自己改过的文件。
 - **先写红测试**：新 opcode / handler 行为先写 `tests/*.rs` 用例并确认因「功能缺失」而红，再实现；`cargo test --quiet` 要逐 target 看 `test result:`，别只看最后一块。
 

@@ -16,10 +16,12 @@ Status: accepted — 以 `./scripts/check.sh` 作为本地与 CI 的唯一自查
 - 主门禁固定为：`cargo clippy --all-targets -- -D warnings` → `cargo test --quiet` → 文档门禁（ADR 格式 + 预算/死链/入口指针）。入口是 `scripts/check.sh`，`--docs-only` 供纯文档改动与 CI 文档 job 使用。
 - CI 的 clippy job 补 `--all-targets`；新增 `docs` job 跑 `./scripts/check.sh --docs-only`，与本地同一条命令。
 - `cargo fmt --check` 不进主门禁：只格式化自己动过的文件；将来若钉死 `rust-toolchain.toml`，再单独评估。
+- **不钉 `rust-toolchain.toml`，两边都追最新 stable**（用户决策）：本机 `rustup update stable`，CI 每个 job 显式 `dtolnay/rust-toolchain@stable`，并在 clippy job 与 `scripts/check.sh` 开头打印 `rustc/cargo/clippy` 版本。CI 出现本机没有的新 lint 时，规定动作是「先 `rustup update stable` 复现 → 再真修」，不许 `#[allow]` 压，也不许为此钉版本。
 - 门禁本身要有验红证据：`scripts/verify-gates.py` 在临时副本里注入 8 类缺陷（预算超限、死链、入口指针缺失、入口出现二级标题、ADR Status 错位、ADR 散落文件、子代理契约缺段、ADR 备选为空），逐条要求变红，并断言干净副本为绿。
 
 ## 备选方案
 
+- **钉 `rust-toolchain.toml` = 1.x.y**：被否（用户决策）。钉版能消除「本机绿 / CI 红」的版本盲区，但代价是整个仓库停留在旧 lint 集合上，新版本给出的真问题永远看不见；用户要求始终用最新 clippy 检查。
 - **把 fmt 一起进门禁**：被否。需要先提交一次 700+ 处的全仓重排，功能 PR 的 diff 会被格式化噪音淹没；且没有 toolchain 钉版时，本机绿不代表 CI 绿（不同 rustfmt 版本换行策略不同）。
 - **在 `Cargo.toml` / 源码里 `-A clippy::manual_checked_ops` 抑制**：被否。抑制等于让门禁对同类新代码永久失明，而正确修法只有两行；用户的要求是「零告警」，不是「零报错」。
 - **维持 CI 只查 lib/bin**：被否。这正是缺口本身；测试里的断言逻辑出错时，编译期告警是最便宜的一道拦截。
@@ -30,7 +32,7 @@ Status: accepted — 以 `./scripts/check.sh` 作为本地与 CI 的唯一自查
 - 基线现在可复现：任何人在干净 checkout 上跑 `./scripts/check.sh` 得到与 CI 相同的判定。
 - 代价一：升级 rustc 后可能出现新的默认 lint，提交前必须先修——这是「零告警」的固有成本。
 - 代价二：`fmt` 漂移仍在，只能靠「只格式化触碰文件」的人工纪律，门禁不兜底。
-- 已知限制：`Cargo.lock` 未入库（库 crate 惯例），依赖版本漂移只在 CI 首次构建暴露；`rust-toolchain.toml` 仍未钉——本机已升到 1.100.0 与 runner 对齐，但下次 runner 升级会重演「本机绿、CI 红」，详见下面的验证一节。
+- 已知限制：`Cargo.lock` 未入库（库 crate 惯例），依赖版本漂移只在 CI 首次构建暴露。`rust-toolchain.toml` 有意不钉（见决策）：版本差靠「两端都追 latest + 日志打印版本」兜住，CI 可能比本机先升一版，届时按决策里的规定动作处理。
 - 回归指针：`scripts/check.sh`（主门禁）、`scripts/validate_adr.py`（决议格式）、`scripts/verify-gates.py`（门禁自证，含用例数下限 8）。
 
 ## 验证
