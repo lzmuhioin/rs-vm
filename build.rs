@@ -2496,4 +2496,52 @@ fn assert_macro_opcode_table_matches() {
             ours_shuffled.get(first_diff),
         );
     }
+
+    assert_vendor_opcode_consts_match();
+}
+
+/// 第三份副本：`vendor/aegis_vm_macro/src/opcodes.rs` 的 `pub const NAME: u8`。
+///
+/// 这份表不参与置换生成，但**宏发射指令时用的就是它**：数值与 build.rs 不一致时，
+/// 构建不会失败，运行期表现为「发了别的指令」——比 E02 更隐蔽。逐名比对。
+fn assert_vendor_opcode_consts_match() {
+    const VENDOR_OPCODES: &str = "vendor/aegis_vm_macro/src/opcodes.rs";
+    let source = match fs::read_to_string(VENDOR_OPCODES) {
+        Ok(text) => text,
+        Err(err) => panic!("无法读取 {VENDOR_OPCODES}: {err}"),
+    };
+
+    let mut vendor: Vec<(String, u8)> = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("pub const ") else {
+            continue;
+        };
+        let Some((name, value_part)) = rest.split_once(": u8 = 0x") else {
+            continue;
+        };
+        let digits: String = value_part
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .collect();
+        if let Ok(value) = u8::from_str_radix(&digits, 16) {
+            vendor.push((name.trim().to_string(), value));
+        }
+    }
+
+    for (module, name, value) in BASE_OPCODES.iter() {
+        let Some((_, vendor_value)) = vendor.iter().find(|(n, _)| n == name) else {
+            // 融合指令必须两端都有：宏发射端缺失就等于发不出来
+            assert_ne!(
+                *module, "fused",
+                "{VENDOR_OPCODES} 缺少融合指令 {name}（build.rs 记为 0x{value:02X}）"
+            );
+            continue;
+        };
+        assert_eq!(
+            vendor_value, value,
+            "{VENDOR_OPCODES} 里 {name} = 0x{vendor_value:02X}，build.rs 里是 0x{value:02X}；\n\
+             两端数值不一致时构建不会失败，但宏会发出错误的指令"
+        );
+    }
 }
