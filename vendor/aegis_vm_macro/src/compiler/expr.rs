@@ -480,6 +480,9 @@ impl Compiler {
     fn compile_eq(&mut self) -> Result<(), CompileError> {
         // XOR: if equal, result is 0
         self.emit_xor();
+        // XOR 的结果只用于置 ZF，必须丢弃：否则每次求值 `==` 都会在栈上多留一个值，
+        // 循环里跑一千多轮就会 E03/E04（与 LT/LE/GT/GE 的 `CMP; DROP; DROP` 对齐）
+        self.emit_drop();
 
         let else_label = self.unique_label("eq_else");
         let end_label = self.unique_label("eq_end");
@@ -497,6 +500,8 @@ impl Compiler {
     /// Compile inequality: a != b
     fn compile_ne(&mut self) -> Result<(), CompileError> {
         self.emit_xor();
+        // 同上：XOR 结果只用来置 ZF，丢弃后再压布尔值
+        self.emit_drop();
 
         let else_label = self.unique_label("ne_else");
         let end_label = self.unique_label("ne_end");
