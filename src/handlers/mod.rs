@@ -34,6 +34,10 @@ pub use string::*;
 // Arithmetic Handlers - Conditionally use mutated versions
 // =============================================================================
 
+// Fused superinstruction handlers. Note: not covered by `handler_mutation` yet —
+// the fused forms are still opcode-shuffled and encrypted, but skip mutation.
+pub use arithmetic::handle_inc_reg;
+
 // Non-mutated arithmetic handlers (always from arithmetic module)
 pub use arithmetic::{
     handle_shl, handle_shr, handle_rol, handle_ror,

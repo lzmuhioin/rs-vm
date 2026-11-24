@@ -182,6 +182,16 @@ pub fn w_jge(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
 pub fn w_jle(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_jle(s)
 }
+
+#[inline(always)]
+pub fn w_cmp_reg_reg_jge(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_cmp_reg_reg_jge(s)
+}
+
+#[inline(always)]
+pub fn w_inc_reg(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_inc_reg(s)
+}
 #[inline(always)]
 pub fn w_call(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_call(s)
@@ -490,6 +500,10 @@ pub const HANDLER_TABLE: [Handler; 256] = {
     table[0x37] = w_jle;
     table[0x38] = w_call;
     table[0x39] = w_ret;
+
+    // Superinstructions
+    table[0x9B] = w_cmp_reg_reg_jge;
+    table[0x9C] = w_inc_reg;
 
     // Special (0x40-0x45)
     table[0x40] = w_nop;

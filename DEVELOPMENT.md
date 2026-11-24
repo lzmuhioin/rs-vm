@@ -14,7 +14,7 @@ build.rs (2378 行, 生成器)
         ├─ native_ids / flags / FNV 常量
         ├─ ENTROPY_POOL / POOL_SIZE + get_build_seed() / get_smc_domain_hash() / get_nonce_domain_hash()
         └─> src/lib.rs  `include!(concat!(env!("OUT_DIR"), "/build_config.rs"))`
-aegis_vm_macro 0.2.51 (crates.io 外部 crate) ── 编译期读 .anticheat_build_seed，用同一套密钥/置换加密字节码
+aegis_vm_macro 0.2.52 (`vendor/aegis_vm_macro`，已收进仓库) ── 编译期读 .anticheat_build_seed，用同一套密钥/置换加密字节码
 ```
 
 - 本仓是**运行时**；编译期（`#[vm_protect]` / `#[obfuscate_strings]` / `aegis_str`）在 `aegis_vm_macro` 里。
@@ -62,7 +62,7 @@ CI（`.github/workflows/rust.yml`）：`build+test`（默认特性）、`async_v
 
 ## 常用任务
 
-- **加一个 opcode**：`src/opcodes.rs` 常量 → `dispatch.rs` 的 `HANDLER_TABLE` 槽位 + 处理函数 → `tests/vm_opcodes.rs` 断言。**宏侧同步**是外部 crate 的事：`aegis_vm_macro` 不认这个 opcode 之前，任何 `#[vm_protect]` 代码都生成不出来 —— 先写决议说明对接方式。
+- **加一个 opcode**：`src/opcodes.rs` 常量 → `dispatch.rs` 的 `HANDLER_TABLE` 槽位 + 处理函数 → `tests/vm_opcodes.rs` 断言。**宏侧同步**在 `vendor/aegis_vm_macro`：`src/opcodes.rs` 加同一常量、`src/crypto.rs` 的 `BASE_OPCODES` **只能追加到最后一行**（置换槽位按列表顺序分配，插中间会让既有字节码整体解错，报 `InvalidOpcode`），再写决议。
 - **加 native 函数**：`src/native.rs` 的 `standard_ids` + `build.rs` 的 native id 生成，再补测试。
 - **跑示例**：`cargo run --example 01_arithmetic`；异步示例加 `--features async_vm`。
 - **WASM**：`cd examples/wasm_test && wasm-pack test --node`（需 `rustup target add wasm32-unknown-unknown`）。

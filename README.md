@@ -10,7 +10,7 @@ RustAegis is a research-grade software protection system that compiles Rust code
 
 ## 🚀 Key Features
 
-*   **Virtualization:** Converts Rust AST directly into a custom stack-based VM instruction set with 96 opcodes.
+*   **Virtualization:** Converts Rust AST directly into a custom stack-based VM instruction set with 98 opcodes (2 are fused superinstructions).
 *   **Native Function Calls:** External functions called inside `#[vm_protect]` are automatically wrapped and executed. No manual setup required.
 *   **Rich Type Support:** Strings, Vectors/Arrays, integers (signed/unsigned), booleans with proper type tracking.
 *   **Heap Memory:** Dynamic memory allocation with automatic cleanup on scope exit.
@@ -203,19 +203,20 @@ Virtualization comes with a cost. RustAegis is designed for **security**, not sp
 
     | Workload | Native | `standard` | `paranoid` | Slowdown |
     |---|---|---|---|---|
-    | Arithmetic call (~8 VM instructions) | 1.2 ns | 550 ns | 1044 ns | 459x / 870x |
-    | `fib(20)` (~150 VM instructions) | 4.2 ns | 3021 ns | — | 719x |
-    | `sum(2000)` (~12k VM instructions) | 2150 ns | 214047 ns | — | 100x |
+    | Arithmetic call (~20 VM instructions) | 1.3 ns | ~220 ns | ~690 ns | ~150x / ~470x |
+    | `fib(20)` (~150 VM instructions) | 5.2 ns | ~1850 ns | — | ~370x |
+    | `sum(2000)` (2000 loop iterations) | 2.2 µs | ~135 µs | — | ~62x |
     | First call of a protected function | — | 0.9–1.8 ms | — | one-time per function |
 
     Cost model — use this to estimate your own workload instead of the table above:
 
-    *   **per call: 0.4–0.6 µs fixed** — `VmState::new()` allocates six `Vec`s (4 KiB heap, registers, stack, call stack, free list), plus input packing and result extraction.
-    *   **per VM instruction: 18–23 ns** — fetch, `OPCODE_DECODE` table lookup, indirect handler call, stack/register update.
+    *   **per call: ~47 ns fixed** — `VmState::new()` allocates only the register file and the value stack (heap / free list / call stack grow on demand), plus input packing and result extraction.
+    *   **per VM instruction: ~6 ns** — 2.3 ns dispatch (fetch, `OPCODE_DECODE` lookup, indirect handler call) + 3.3 ns handler work (measured on NOP-only and arithmetic-only bytecode).
+    *   **per loop iteration: ~67 ns** — a `for` loop compiles to ~11 VM instructions; the loop condition and increment are fused superinstructions (`CMP_REG_REG_JGE`, `INC_REG`) as of 0.2.53.
     *   **cold start: 1–2 ms per protected function, once per process** — white-box table init, key derivation, AES-GCM decrypt, integrity hash; afterwards the decrypted bytecode is cached in a `SpinOnce`.
 
-    Consequences: short functions called in hot loops are the worst case (>800x); instruction-heavy loops converge to ~100x. Measurement note: VM timings swing 2–4x on a loaded or frequency-scaling machine — pin to a core (`taskset -c N`) and take the minimum of several runs before quoting a ratio.
-*   **Usage:** Apply `#[vm_protect]` **only** to sensitive functions (license checks, key generation, encryption logic). Do **not** virtualize tight loops in performance-critical rendering or physics code — a virtualized loop costs ~100 ns per iteration.
+    Consequences: short functions called in hot loops are the worst case (~150x); instruction-heavy loops converge to ~60x. Measurement note: VM timings swing 2–4x on a loaded or frequency-scaling machine — pin to a core (`taskset -c N`) and take the minimum of several runs before quoting a ratio.
+*   **Usage:** Apply `#[vm_protect]` **only** to sensitive functions (license checks, key generation, encryption logic). Do **not** virtualize tight loops in performance-critical rendering or physics code — a virtualized loop costs ~67 ns per iteration.
 *   **Supported Platforms:** Works on `x86_64`, `aarch64`, `wasm32`, and any platform supported by Rust `std` or `alloc` (no_std compatible).
 
 ## 📂 Examples
@@ -261,7 +262,7 @@ cargo install wasm-pack
 ### Cargo.toml Configuration
 ```toml
 [dependencies]
-aegis_vm = { version = "0.2.51", default-features = false }
+aegis_vm = { version = "0.2.53", default-features = false }
 wasm-bindgen = "0.2"
 ```
 
@@ -317,7 +318,7 @@ The Async VM feature transforms the VM execution loop into an async/await state 
 **Enable:**
 ```toml
 [dependencies]
-aegis_vm = { version = "0.2.51", features = ["async_vm"] }
+aegis_vm = { version = "0.2.53", features = ["async_vm"] }
 ```
 
 **Usage:**
@@ -338,6 +339,17 @@ let result = execute_async(&bytecode, &input)?;
 **Note:** This is an obfuscation layer, not cryptographic security. A skilled analyst can still reverse the state machine given enough time.
 
 ## 📋 Changelog
+
+### v0.2.53
+
+- **Superinstruction fusion**: `CMP_REG_REG_JGE` (loop condition) and `INC_REG` (loop increment)
+  cut 7 dispatches per `for` iteration. Measured: `sum(2000)` −30%, `fib(20)` −29%.
+- **`aegis_vm_macro` 0.2.52** is now vendored in `vendor/aegis_vm_macro` so the emitting side and
+  the runtime can evolve together. New opcodes are **appended** to `BASE_OPCODES`, so every
+  pre-existing opcode keeps its shuffled value — old bytecode stays valid.
+- **Per-call overhead**: no longer rebuilds the 256-entry `NativeRegistry` each `execute()`
+  (was 271 ns/call), and `VmState::new()` only preallocates what the hot path uses.
+  441 ns → 47 ns per call.
 
 ### v0.2.51
 

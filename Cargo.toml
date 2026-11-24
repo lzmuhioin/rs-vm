@@ -1,6 +1,6 @@
 [package]
 name = "aegis_vm"
-version = "0.2.52"
+version = "0.2.53"
 edition = "2021"
 description = "Advanced Rust code virtualization and obfuscation framework"
 license = "MIT"
@@ -18,7 +18,7 @@ hmac = { version = "0.13", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 digest = { version = "0.11", default-features = false }
 subtle = { version = "2.5", default-features = false }
-aegis_vm_macro = "0.2.51" # For no_std Once cell (used by generated macro code)
+aegis_vm_macro = { path = "vendor/aegis_vm_macro", version = "0.2.52" } # 见 docs/adr：超级指令需要宏与运行时同轮升级
 spin = { version = "0.10", default-features = false, features = ["once"] }
 
 [build-dependencies]

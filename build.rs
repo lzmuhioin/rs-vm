@@ -749,6 +749,11 @@ const BASE_OPCODES: &[(& str, &str, u8)] = &[
     // Execution control
     ("exec", "HALT", 0xFF),
     ("exec", "HALT_ERR", 0xFE),
+    // Superinstructions. MUST stay last: the shuffle assigns slots in list order,
+    // so appending keeps every existing opcode's shuffled value unchanged (old
+    // bytecode stays valid). See docs/adr — 超级指令.
+    ("fused", "CMP_REG_REG_JGE", 0x9B),
+    ("fused", "INC_REG", 0x9C),
 ];
 
 /// Critical opcodes that get handler duplication (alias opcodes)

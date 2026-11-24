@@ -152,3 +152,15 @@ pub fn handle_imod(state: &mut VmState) -> VmResult<()> {
     state.set_zero_flag(result);
     state.push(result)
 }
+
+/// INC_REG: fused `PUSH_REG r; INC; POP_REG r` (superinstruction).
+///
+/// Encoding: `INC_REG <reg:u8>`. Increments the register in place and sets the zero
+/// flag from the result, matching `INC`'s flag behaviour (ZF only).
+pub fn handle_inc_reg(state: &mut VmState) -> VmResult<()> {
+    let idx = state.read_u8()?;
+    let value = state.get_reg(idx)?.wrapping_add(1);
+    state.set_reg(idx, value)?;
+    state.set_zero_flag(value);
+    Ok(())
+}

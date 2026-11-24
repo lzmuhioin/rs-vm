@@ -10,7 +10,7 @@
 
 ## 不变量（红线）
 
-- **proc-macro 与运行时是一对**：`aegis_vm_macro`（crates.io 外部 crate）在编译期加密字节码并做 opcode 置换，本仓运行时负责解密执行；改 `build.rs` 产出的 `build_config.rs` 契约（`BUILD_SEED` / `OPCODE_ENCODE` / `OPCODE_DECODE` / 熵池 / SMC 域哈希）等于同时改两端握手，必须同轮升级 macro 版本并写决议。
+- **proc-macro 与运行时是一对**：`aegis_vm_macro`（0.2.52 起收进 `vendor/`）在编译期加密字节码并做 opcode 置换，本仓运行时负责解密执行；`BASE_OPCODES` 两份（`build.rs` 与 `vendor/.../crypto.rs`）**只能末尾追加**；改 `build.rs` 产出的 `build_config.rs` 契约（`BUILD_SEED` / `OPCODE_ENCODE` / `OPCODE_DECODE` / 熵池 / SMC 域哈希）等于同时改两端握手，必须同轮升级 macro 版本并写决议。
 - **whitebox 是编译期硬约束**：`src/lib.rs` 的 `compile_error!` 要求 `whitebox` 或 `whitebox_lite`；`--no-default-features` 只能搭配 `whitebox_lite`（WASM 构建即此组合）。删掉这条检查等于关掉加密字节码。
 - **`.anticheat_build_seed` 不入库**：构建时生成，决定每个构建的 opcode 置换与密钥。`ANTICHEAT_BUILD_KEY` 只固定 seed（熵池仍取 `/dev/urandom`，产物不逐字节可复现），时间戳用 `SOURCE_DATE_EPOCH`；换机器重建请先 `cargo clean`。
 - **no_std 路径不得引入 std**：`no_std` 下只用 `alloc` / `core` 与既有 `spin`；新依赖必须 `default-features = false`，并在决议里写明理由。

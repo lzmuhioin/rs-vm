@@ -8,7 +8,7 @@
 //! ## Features
 //!
 //! - **Hybrid Architecture**: Stack + register based for flexibility
-//! - **96 Opcodes**: Complete instruction set for complex logic
+//! - **98 Opcodes**: Complete instruction set for complex logic (incl. 2 fused superinstructions)
 //! - **Anti-Analysis**: Opaque predicates are emitted in polymorphic padding (standard
 //!   level and up); the integrity and timing primitives of this crate are exported but
 //!   not run automatically — call `integrity::verify_hash` (or the `TIMING_CHECK`

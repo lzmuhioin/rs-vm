@@ -125,3 +125,25 @@ pub fn handle_ret(state: &mut VmState) -> VmResult<()> {
         }
     }
 }
+
+/// CMP_REG_REG_JGE: fused loop condition (superinstruction).
+///
+/// Encoding: `CMP_REG_REG_JGE <a:u8> <b:u8> <offset:i16>`.
+/// Equivalent to `PUSH_REG a; PUSH_REG b; CMP; DROP; DROP; JGE offset`:
+/// sets the same flags, leaves the stack untouched, then branches if `a >= b` (signed).
+pub fn handle_cmp_reg_reg_jge(state: &mut VmState) -> VmResult<()> {
+    let a_idx = state.read_u8()?;
+    let b_idx = state.read_u8()?;
+    let offset = state.read_i16()?;
+
+    let a = state.get_reg(a_idx)?;
+    let b = state.get_reg(b_idx)?;
+    state.update_cmp_flags(a, b);
+
+    // Greater or equal: sign == overflow
+    if state.is_negative() == state.is_overflow() {
+        jump_relative(state, offset)
+    } else {
+        Ok(())
+    }
+}

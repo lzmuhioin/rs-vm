@@ -175,6 +175,17 @@ pub mod control {
     /// Return from subroutine
     /// Format: RET
     pub const RET: u8 = 0x39;
+
+    /// CMP_REG_REG_JGE: fused loop condition (superinstruction).
+    /// Format: CMP_REG_REG_JGE <a:u8> <b:u8> <offset:i16>
+    /// Equivalent to `PUSH_REG a; PUSH_REG b; CMP; DROP; DROP; JGE offset`
+    /// (stack-neutral, sets the same flags), emitted by the macro for `for`/`while`
+    /// conditions whose operands are both registers.
+    pub const CMP_REG_REG_JGE: u8 = 0x9B;
+
+    /// INC_REG: 融合的 `PUSH_REG r; INC; POP_REG r`（寄存器自增，置零标志）。
+    /// Format: INC_REG <reg:u8>
+    pub const INC_REG: u8 = 0x9C;
 }
 
 /// Special Operations (Anti-analysis)
