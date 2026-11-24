@@ -12,7 +12,7 @@ jobs:
     build:
       runs-on: ubuntu-latest
       steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
         run: cargo build --verbose
@@ -23,7 +23,7 @@ jobs:
     async_vm:
       runs-on: ubuntu-latest
       steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Build with async_vm
         run: cargo build --features async_vm --verbose
@@ -34,7 +34,7 @@ jobs:
     wasm:
       runs-on: ubuntu-latest
       steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -45,7 +45,7 @@ jobs:
     clippy:
       runs-on: ubuntu-latest
       steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -58,6 +58,6 @@ jobs:
     docs:
       runs-on: ubuntu-latest
       steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Docs gates
         run: ./scripts/check.sh --docs-only
