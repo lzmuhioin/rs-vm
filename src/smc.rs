@@ -250,8 +250,8 @@ impl SmcExecState {
 /// SMC-enabled execution
 /// Takes ownership of bytecode for in-place modification
 pub fn execute_smc(mut code: Vec<u8>, input: &[u8], config: &SmcConfig) -> VmResult<u64> {
-    let registry = NativeRegistry::new();
-    execute_smc_with_natives(&mut code, input, config, &registry)
+    let registry = crate::native::empty_registry();
+    execute_smc_with_natives(&mut code, input, config, registry)
 }
 
 /// SMC-enabled execution with native functions

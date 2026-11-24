@@ -53,6 +53,23 @@ impl Default for NativeRegistry {
     }
 }
 
+/// Process-wide empty registry.
+///
+/// 热路径（每次 `execute()`）都用空 registry；`NativeRegistry::new()` 每次要分配并填充
+/// 256 项（实测 271 ns/次），所以共享一份只读实例，避免把它算进每次调用的固定成本。
+#[cfg(feature = "std")]
+pub fn empty_registry() -> &'static NativeRegistry {
+    static EMPTY: std::sync::OnceLock<NativeRegistry> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(NativeRegistry::new)
+}
+
+/// Process-wide empty registry (no_std: `spin::Once`).
+#[cfg(not(feature = "std"))]
+pub fn empty_registry() -> &'static NativeRegistry {
+    static EMPTY: spin::Once<NativeRegistry> = spin::Once::new();
+    EMPTY.call_once(NativeRegistry::new)
+}
+
 impl NativeRegistry {
     /// Create a new empty registry
     pub fn new() -> Self {

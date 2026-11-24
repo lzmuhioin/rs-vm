@@ -35,7 +35,7 @@ pub fn execute_with_native_table(code: &[u8], input: &[u8], native_table: &[fn(&
 
 /// Main execution loop with native function table support
 pub fn run_with_native_table(state: &mut VmState) -> VmResult<()> {
-    let empty_registry = NativeRegistry::new();
+    let empty_registry = crate::native::empty_registry();
     while !state.halted && state.ip < state.code.len() {
         // Instruction count limit
         state.instruction_count += 1;
@@ -47,7 +47,7 @@ pub fn run_with_native_table(state: &mut VmState) -> VmResult<()> {
         let opcode = state.read_u8()?;
 
         // Indirect dispatch via function pointer table
-        dispatch_indirect(state, opcode, &empty_registry)?;
+        dispatch_indirect(state, opcode, empty_registry)?;
     }
 
     Ok(())
@@ -62,8 +62,8 @@ pub fn execute_with_state<'a>(code: &'a [u8], input: &'a [u8]) -> VmResult<VmSta
 
 /// Main execution loop (without native functions)
 pub fn run(state: &mut VmState) -> VmResult<()> {
-    let empty_registry = NativeRegistry::new();
-    run_with_natives(state, &empty_registry)
+    let empty_registry = crate::native::empty_registry();
+    run_with_natives(state, empty_registry)
 }
 
 /// Main execution loop with native function support

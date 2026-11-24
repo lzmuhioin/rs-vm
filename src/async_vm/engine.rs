@@ -50,7 +50,7 @@ pub fn execute_async_with_native_table(
 
 /// Async execution loop with native function table support
 pub async fn run_async_with_native_table(state: &mut VmState<'_>) -> VmResult<()> {
-    let empty_registry = NativeRegistry::new();
+    let empty_registry = crate::native::empty_registry();
     let yield_mask = state.get_yield_mask();
 
     while !state.halted && state.ip < state.code.len() {
@@ -60,7 +60,7 @@ pub async fn run_async_with_native_table(state: &mut VmState<'_>) -> VmResult<()
         }
 
         let opcode = state.read_u8()?;
-        dispatch_indirect(state, opcode, &empty_registry)?;
+        dispatch_indirect(state, opcode, empty_registry)?;
 
         if (state.instruction_count & yield_mask) == 0 {
             YieldNow::new().await;
@@ -73,8 +73,8 @@ pub async fn run_async_with_native_table(state: &mut VmState<'_>) -> VmResult<()
 /// Async execution loop (without native functions)
 #[inline]
 pub async fn run_async(state: &mut VmState<'_>) -> VmResult<()> {
-    let empty_registry = NativeRegistry::new();
-    run_async_with_natives(state, &empty_registry).await
+    let empty_registry = crate::native::empty_registry();
+    run_async_with_natives(state, empty_registry).await
 }
 
 /// Async execution loop with native function support
