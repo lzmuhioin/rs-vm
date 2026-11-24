@@ -63,6 +63,10 @@ pub mod control {
     pub const CMP_REG_REG_JGE: u8 = 0x9B;
     /// INC_REG: fused PUSH_REG;INC;POP_REG (must match vm/build.rs)
     pub const INC_REG: u8 = 0x9C;
+    pub const ADD_REG_IMM: u8 = 0x9D;
+    pub const ADD_REG_REG: u8 = 0x9E;
+    pub const MUL_REG_IMM: u8 = 0x9F;
+    pub const MUL_REG_REG: u8 = 0xA0;
 }
 
 /// Special Operations

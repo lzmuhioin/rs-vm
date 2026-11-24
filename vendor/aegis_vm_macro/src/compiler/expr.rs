@@ -1043,3 +1043,141 @@ impl Compiler {
         Ok(())
     }
 }
+
+// =============================================================================
+// 寄存器目的地的算术发射（超级指令）
+// =============================================================================
+// 只覆盖 int 的 `+` / `*`，叶子是变量或整数字面量；其余形态一律回退到栈路径。
+// 目的：把 `x = a + b` 这类赋值从 `PUSH;PUSH;OP;POP` 压成一条寄存器指令。
+
+impl Compiler {
+    /// 表达式若是变量，返回其寄存器。
+    fn expr_var_reg(&self, expr: &Expr) -> Option<u8> {
+        let Expr::Path(path) = expr else { return None };
+        if path.path.segments.len() != 1 {
+            return None;
+        }
+        let name = path.path.segments[0].ident.to_string();
+        match self.get_var_location(&name) {
+            Some(VarLocation::Register(reg))
+            | Some(VarLocation::Array(reg, _))
+            | Some(VarLocation::String(reg)) => Some(reg),
+            _ => None,
+        }
+    }
+
+    /// 表达式若是整数字面量，返回其值。
+    fn int_lit(expr: &Expr) -> Option<u64> {
+        let Expr::Lit(lit) = expr else { return None };
+        let syn::Lit::Int(int_lit) = &lit.lit else { return None };
+        int_lit.base10_parse::<u64>().ok()
+    }
+
+    /// 是否可以安全地「无副作用地」编译进寄存器（纯判断，不发射任何字节）。
+    pub(crate) fn can_expr_to_reg(&self, expr: &Expr) -> bool {
+        self.can_expr_to_reg_inner(expr, 0)
+    }
+
+    fn can_expr_to_reg_inner(&self, expr: &Expr, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        match expr {
+            Expr::Path(_) => self.expr_var_reg(expr).is_some(),
+            Expr::Lit(_) => Self::int_lit(expr).is_some(),
+            Expr::Binary(b) => {
+                if !matches!(b.op, BinOp::Add(_) | BinOp::Mul(_)) {
+                    return false;
+                }
+                // 右侧若是立即数，必须能塞进 u32（融合指令的编码限制）。
+                if let Some(imm) = Self::int_lit(&b.right) {
+                    if imm > u32::MAX as u64 {
+                        return false;
+                    }
+                } else if self.expr_var_reg(&b.right).is_none() {
+                    // 右侧要落进临时寄存器：留出余量，避免与局部变量区重叠
+                    if self.next_local_reg >= 240 {
+                        return false;
+                    }
+                    if !self.can_expr_to_reg_inner(&b.right, depth + 1) {
+                        return false;
+                    }
+                }
+                self.can_expr_to_reg_inner(&b.left, depth + 1)
+            }
+            _ => false,
+        }
+    }
+
+    /// 把表达式编译进 `dst` 寄存器。调用前必须 `can_expr_to_reg(expr) == true`。
+    pub(crate) fn compile_expr_to_reg(&mut self, expr: &Expr, dst: u8) -> Result<(), CompileError> {
+        match expr {
+            Expr::Path(_) => {
+                let src = self
+                    .expr_var_reg(expr)
+                    .ok_or_else(|| CompileError("expr→reg: unknown variable".to_string()))?;
+                if src != dst {
+                    self.emit_mov_reg(dst, src);
+                }
+                Ok(())
+            }
+            Expr::Lit(_) => {
+                let value = Self::int_lit(expr)
+                    .ok_or_else(|| CompileError("expr→reg: non-integer literal".to_string()))?;
+                self.emit_mov_imm(dst, value);
+                Ok(())
+            }
+            Expr::Binary(b) => {
+                let is_add = match b.op {
+                    BinOp::Add(_) => true,
+                    BinOp::Mul(_) => false,
+                    _ => {
+                        return Err(CompileError(
+                            "expr→reg: unsupported binary operator".to_string(),
+                        ))
+                    }
+                };
+
+                // 右侧是立即数：dst = dst ⊕ imm
+                if let Some(imm) = Self::int_lit(&b.right) {
+                    self.compile_expr_to_reg(&b.left, dst)?;
+                    if is_add {
+                        self.emit_add_reg_imm(dst, imm as u32);
+                    } else {
+                        self.emit_mul_reg_imm(dst, imm as u32);
+                    }
+                    return Ok(());
+                }
+
+                // 右侧是变量：dst = dst ⊕ right
+                if let Some(rreg) = self.expr_var_reg(&b.right) {
+                    self.compile_expr_to_reg(&b.left, dst)?;
+                    if is_add {
+                        self.emit_add_reg_reg(dst, dst, rreg);
+                    } else {
+                        self.emit_mul_reg_reg(dst, dst, rreg);
+                    }
+                    return Ok(());
+                }
+
+                // 右侧是子表达式：先算进临时寄存器，再合并
+                let saved = self.next_local_reg;
+                let tmp = saved;
+                self.next_local_reg = saved.saturating_add(1);
+                let result = self
+                    .compile_expr_to_reg(&b.right, tmp)
+                    .and_then(|()| self.compile_expr_to_reg(&b.left, dst))
+                    .map(|()| {
+                        if is_add {
+                            self.emit_add_reg_reg(dst, dst, tmp);
+                        } else {
+                            self.emit_mul_reg_reg(dst, dst, tmp);
+                        }
+                    });
+                self.next_local_reg = saved;
+                result
+            }
+            _ => Err(CompileError("expr→reg: unsupported expression".to_string())),
+        }
+    }
+}

@@ -186,6 +186,22 @@ pub mod control {
     /// INC_REG: 融合的 `PUSH_REG r; INC; POP_REG r`（寄存器自增，置零标志）。
     /// Format: INC_REG <reg:u8>
     pub const INC_REG: u8 = 0x9C;
+
+    /// ADD_REG_IMM: `r = r + imm`（等价 PUSH_REG r; PUSH_IMM32 imm; ADD; POP_REG r）
+    /// Format: ADD_REG_IMM <reg:u8> <imm:u32>
+    pub const ADD_REG_IMM: u8 = 0x9D;
+
+    /// ADD_REG_REG: `dst = a + b`（等价 PUSH_REG a; PUSH_REG b; ADD; POP_REG dst）
+    /// Format: ADD_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const ADD_REG_REG: u8 = 0x9E;
+
+    /// MUL_REG_IMM: `r = r * imm`（等价 PUSH_REG r; PUSH_IMM32 imm; MUL; POP_REG r）
+    /// Format: MUL_REG_IMM <reg:u8> <imm:u32>
+    pub const MUL_REG_IMM: u8 = 0x9F;
+
+    /// MUL_REG_REG: `dst = a * b`（等价 PUSH_REG a; PUSH_REG b; MUL; POP_REG dst）
+    /// Format: MUL_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const MUL_REG_REG: u8 = 0xA0;
 }
 
 /// Special Operations (Anti-analysis)

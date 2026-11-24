@@ -226,8 +226,14 @@ impl Compiler {
                 let name = path.path.segments[0].ident.to_string();
                 match self.get_var_location(&name) {
                     Some(VarLocation::Register(reg)) => {
-                        self.compile_expr(value)?;
-                        self.emit_pop_reg(reg);
+                        // 超级指令路径：`x = a + b` / `x = x * k` 直接落到寄存器，
+                        // 省掉 PUSH;PUSH;OP;POP 三条 dispatch。不适用则回退栈路径。
+                        if self.can_expr_to_reg(value) {
+                            self.compile_expr_to_reg(value, reg)?;
+                        } else {
+                            self.compile_expr(value)?;
+                            self.emit_pop_reg(reg);
+                        }
                     }
                     Some(VarLocation::Array(reg, _)) | Some(VarLocation::String(reg)) => {
                         // Reassigning array/string variable

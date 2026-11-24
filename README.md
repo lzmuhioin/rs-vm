@@ -215,6 +215,11 @@ Virtualization comes with a cost. RustAegis is designed for **security**, not sp
     *   **per loop iteration: ~67 ns** — a `for` loop compiles to ~11 VM instructions; the loop condition and increment are fused superinstructions (`CMP_REG_REG_JGE`, `INC_REG`) as of 0.2.53.
     *   **cold start: 1–2 ms per protected function, once per process** — white-box table init, key derivation, AES-GCM decrypt, integrity hash; afterwards the decrypted bytecode is cached in a `SpinOnce`.
 
+    Round-2 superinstructions (0.2.53: `ADD_REG_IMM` / `ADD_REG_REG` / `MUL_REG_IMM` / `MUL_REG_REG`)
+    were measured with an A/B harness — same binary, same build seed, alternating runs, 5 rounds:
+    loop-heavy code **−33%**, iterative `fib(20)` **−20%**. Absolute ratios swing 2–4x with machine
+    load, so only same-round relative deltas are quoted.
+
     Consequences: short functions called in hot loops are the worst case (~150x); instruction-heavy loops converge to ~60x. Measurement note: VM timings swing 2–4x on a loaded or frequency-scaling machine — pin to a core (`taskset -c N`) and take the minimum of several runs before quoting a ratio.
 *   **Usage:** Apply `#[vm_protect]` **only** to sensitive functions (license checks, key generation, encryption logic). Do **not** virtualize tight loops in performance-critical rendering or physics code — a virtualized loop costs ~67 ns per iteration.
 *   **Supported Platforms:** Works on `x86_64`, `aarch64`, `wasm32`, and any platform supported by Rust `std` or `alloc` (no_std compatible).
@@ -342,8 +347,11 @@ let result = execute_async(&bytecode, &input)?;
 
 ### v0.2.53
 
-- **Superinstruction fusion**: `CMP_REG_REG_JGE` (loop condition) and `INC_REG` (loop increment)
+- **Superinstruction fusion, round 1**: `CMP_REG_REG_JGE` (loop condition) and `INC_REG` (loop increment)
   cut 7 dispatches per `for` iteration. Measured: `sum(2000)` −30%, `fib(20)` −29%.
+- **Superinstruction fusion, round 2**: `ADD_REG_IMM`, `ADD_REG_REG`, `MUL_REG_IMM`, `MUL_REG_REG`
+  let assignments compile straight into a register instead of `PUSH;PUSH;OP;POP`.
+  Measured (A/B, 5 alternating rounds): loop-heavy −33%, iterative `fib(20)` −20%.
 - **`aegis_vm_macro` 0.2.52** is now vendored in `vendor/aegis_vm_macro` so the emitting side and
   the runtime can evolve together. New opcodes are **appended** to `BASE_OPCODES`, so every
   pre-existing opcode keeps its shuffled value — old bytecode stays valid.

@@ -32,10 +32,17 @@ best-of-5）得到两条结论：
      循环条件省 5 条 dispatch；
    - `INC_REG <r:u8>`：等价于 `PUSH_REG r; INC; POP_REG r`（就地自增 + 只置 ZF），
      循环增量省 2 条 dispatch。
-3. **opcode 表只允许「追加」**：`build.rs` 与 `vendor/aegis_vm_macro/src/crypto.rs` 各有一份
+3. **第二轮：4 条寄存器算术融合指令**（base `0x9D`–`0xA0`，同一份「只能末尾追加」约束）：
+   - `ADD_REG_IMM <dst:u8> <imm:u32>` ≡ `PUSH_REG dst; PUSH_IMM32 imm; ADD; POP_REG dst`
+   - `ADD_REG_REG <dst:u8> <a:u8> <b:u8>` ≡ `PUSH_REG a; PUSH_REG b; ADD; POP_REG dst`
+   - `MUL_REG_IMM` / `MUL_REG_REG`：同上，算子换成 `MUL`
+   宏侧在赋值处走「寄存器目的地」编译：`can_expr_to_reg` 先做纯判断（只支持 int 的
+   `+`/`*`，叶为变量或 `u32` 内的整数字面量，深度 ≤8），可编译则 `compile_expr_to_reg`
+   直接发射寄存器指令，否则回退原栈序列 —— 保证不产生半截字节码。
+4. **opcode 表只允许「追加」**：`build.rs` 与 `vendor/aegis_vm_macro/src/crypto.rs` 各有一份
    `BASE_OPCODES`，置换槽位按列表顺序分配，新条目放在**最后**可保证既有 opcode 的置换值一字不变 ——
    旧字节码仍然有效，升级向后兼容。两处注释都写死了这条约束。
-4. 宏侧只在可证明等价的位置发射：`for` 循环（非闭区间）的条件与增量；其余情形保持原序列。
+5. 宏侧只在可证明等价的位置发射：`for` 循环（非闭区间）的条件与增量；其余情形保持原序列。
    `#[vm_protect]` 的保护级别语义不变。
 
 ## 备选方案
@@ -59,6 +66,11 @@ best-of-5）得到两条结论：
   或换寄存器式 ISA。
 - 旧字节码兼容：追加式修改的直接推论，前 96 项置换值不变；`tests/fused_opcodes.rs` 6 个用例
   （`>`/`=`/`<` 分支、栈中性、`INC_REG` 就地自增、ZF 语义）与 `encrypted_execution` 全绿。
+- 第二轮 A/B 实测（同一探针二进制、同 build seed、交替跑 5 轮、`taskset -c 6`）：
+  - `sum(2000)`（`while` + `s = s*9 + i*i`）：**305–351x → 201–209x（−33%）**
+  - 迭代 `fib(20)`：**222–238x → 180–184x（−20%）**
+  - 小算术函数：278x → 261x（−6%，其指令本来就少）
+  绝对倍率随机器负载可摆动 2–4 倍，故只引用同一轮交替跑的相对降幅。
 - 维护成本：宏不再跟随上游，需要人工合并；`handler_mutation` 特性尚未覆盖融合指令
   （仍经置换+加密，但跳过变异）。
 

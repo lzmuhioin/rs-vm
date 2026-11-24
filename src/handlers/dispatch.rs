@@ -192,6 +192,26 @@ pub fn w_cmp_reg_reg_jge(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
 pub fn w_inc_reg(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_inc_reg(s)
 }
+
+#[inline(always)]
+pub fn w_add_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_add_reg_imm(s)
+}
+
+#[inline(always)]
+pub fn w_add_reg_reg(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_add_reg_reg(s)
+}
+
+#[inline(always)]
+pub fn w_mul_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_mul_reg_imm(s)
+}
+
+#[inline(always)]
+pub fn w_mul_reg_reg(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_mul_reg_reg(s)
+}
 #[inline(always)]
 pub fn w_call(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_call(s)
@@ -504,6 +524,10 @@ pub const HANDLER_TABLE: [Handler; 256] = {
     // Superinstructions
     table[0x9B] = w_cmp_reg_reg_jge;
     table[0x9C] = w_inc_reg;
+    table[0x9D] = w_add_reg_imm;
+    table[0x9E] = w_add_reg_reg;
+    table[0x9F] = w_mul_reg_imm;
+    table[0xA0] = w_mul_reg_reg;
 
     // Special (0x40-0x45)
     table[0x40] = w_nop;

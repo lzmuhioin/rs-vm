@@ -754,6 +754,10 @@ const BASE_OPCODES: &[(& str, &str, u8)] = &[
     // bytecode stays valid). See docs/adr — 超级指令.
     ("fused", "CMP_REG_REG_JGE", 0x9B),
     ("fused", "INC_REG", 0x9C),
+    ("fused", "ADD_REG_IMM", 0x9D),
+    ("fused", "ADD_REG_REG", 0x9E),
+    ("fused", "MUL_REG_IMM", 0x9F),
+    ("fused", "MUL_REG_REG", 0xA0),
 ];
 
 /// Critical opcodes that get handler duplication (alias opcodes)

@@ -3,7 +3,7 @@
 //! All emit_* functions for generating bytecode with optional obfuscation.
 
 use super::Compiler;
-use crate::opcodes::{stack, arithmetic, control, native, vector, string, heap, convert, special};
+use crate::opcodes::{stack, arithmetic, control, native, vector, string, heap, convert, special, register};
 use crate::substitution::{
     IncSubstitution, NotSubstitution,
     AndSubstitution, OrSubstitution, ConstantSubstitution, ZeroSubstitution,
@@ -491,5 +491,51 @@ impl Compiler {
     /// Emit CMP instruction
     pub(crate) fn emit_cmp(&mut self) {
         self.emit_op(control::CMP);
+    }
+}
+
+impl Compiler {
+    /// MOV_REG dst, src
+    pub(crate) fn emit_mov_reg(&mut self, dst: u8, src: u8) {
+        self.emit_op(register::MOV_REG);
+        self.emit(dst);
+        self.emit(src);
+    }
+
+    /// MOV_IMM dst, value:u64
+    pub(crate) fn emit_mov_imm(&mut self, dst: u8, value: u64) {
+        self.emit_op(register::MOV_IMM);
+        self.emit(dst);
+        self.bytecode.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// ADD_REG_IMM dst, imm:u32
+    pub(crate) fn emit_add_reg_imm(&mut self, dst: u8, imm: u32) {
+        self.emit_op(control::ADD_REG_IMM);
+        self.emit(dst);
+        self.bytecode.extend_from_slice(&imm.to_le_bytes());
+    }
+
+    /// ADD_REG_REG dst, a, b
+    pub(crate) fn emit_add_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_op(control::ADD_REG_REG);
+        self.emit(dst);
+        self.emit(a);
+        self.emit(b);
+    }
+
+    /// MUL_REG_IMM dst, imm:u32
+    pub(crate) fn emit_mul_reg_imm(&mut self, dst: u8, imm: u32) {
+        self.emit_op(control::MUL_REG_IMM);
+        self.emit(dst);
+        self.bytecode.extend_from_slice(&imm.to_le_bytes());
+    }
+
+    /// MUL_REG_REG dst, a, b
+    pub(crate) fn emit_mul_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_op(control::MUL_REG_REG);
+        self.emit(dst);
+        self.emit(a);
+        self.emit(b);
     }
 }

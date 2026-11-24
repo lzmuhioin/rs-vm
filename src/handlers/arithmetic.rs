@@ -164,3 +164,45 @@ pub fn handle_inc_reg(state: &mut VmState) -> VmResult<()> {
     state.set_zero_flag(value);
     Ok(())
 }
+
+/// ADD_REG_IMM: `r = r + imm` (fused, ZF only).
+pub fn handle_add_reg_imm(state: &mut VmState) -> VmResult<()> {
+    let idx = state.read_u8()?;
+    let imm = state.read_u32()? as u64;
+    let result = state.get_reg(idx)?.wrapping_add(imm);
+    state.set_reg(idx, result)?;
+    state.set_zero_flag(result);
+    Ok(())
+}
+
+/// ADD_REG_REG: `dst = a + b` (fused, ZF only).
+pub fn handle_add_reg_reg(state: &mut VmState) -> VmResult<()> {
+    let dst = state.read_u8()?;
+    let a = state.read_u8()?;
+    let b = state.read_u8()?;
+    let result = state.get_reg(a)?.wrapping_add(state.get_reg(b)?);
+    state.set_reg(dst, result)?;
+    state.set_zero_flag(result);
+    Ok(())
+}
+
+/// MUL_REG_IMM: `r = r * imm` (fused, ZF only).
+pub fn handle_mul_reg_imm(state: &mut VmState) -> VmResult<()> {
+    let idx = state.read_u8()?;
+    let imm = state.read_u32()? as u64;
+    let result = state.get_reg(idx)?.wrapping_mul(imm);
+    state.set_reg(idx, result)?;
+    state.set_zero_flag(result);
+    Ok(())
+}
+
+/// MUL_REG_REG: `dst = a * b` (fused, ZF only).
+pub fn handle_mul_reg_reg(state: &mut VmState) -> VmResult<()> {
+    let dst = state.read_u8()?;
+    let a = state.read_u8()?;
+    let b = state.read_u8()?;
+    let result = state.get_reg(a)?.wrapping_mul(state.get_reg(b)?);
+    state.set_reg(dst, result)?;
+    state.set_zero_flag(result);
+    Ok(())
+}
