@@ -1068,7 +1068,7 @@ impl Compiler {
     }
 
     /// 表达式若是整数字面量，返回其值。
-    fn int_lit(expr: &Expr) -> Option<u64> {
+    pub(crate) fn int_lit(expr: &Expr) -> Option<u64> {
         let Expr::Lit(lit) = expr else { return None };
         let syn::Lit::Int(int_lit) = &lit.lit else { return None };
         int_lit.base10_parse::<u64>().ok()

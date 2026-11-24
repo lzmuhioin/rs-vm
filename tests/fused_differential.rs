@@ -97,6 +97,51 @@ fn native_d_imm_each(a: u64) -> u64 {
     x
 }
 
+/// 分支：覆盖「立即数边界」「左侧表达式 vs 立即数」「零值测试」「变量 vs 变量」
+#[vm_protect]
+fn d_branch(a: u64, b: u64) -> u64 {
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < 50 {
+        if (i & 1) == 0 {
+            s = s + i;
+        } else {
+            s = s - 1;
+        }
+        if s > a {
+            s = s ^ b;
+        }
+        if s == 0 {
+            s = s + 7;
+        }
+        i = i + 1;
+    }
+    s
+}
+
+fn native_d_branch(a: u64, b: u64) -> u64 {
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while (i as i64) < 50 {
+        // 用位与而不是 `% 2 == 0`：后者会触发 clippy::manual_is_multiple_of，
+        // 而改成 `is_multiple_of` 会走原生方法调用路径，测不到我们要测的条件融合
+        if (i & 1) == 0 {
+            s = s.wrapping_add(i);
+        } else {
+            s = s.wrapping_sub(1);
+        }
+        // VM 的比较-跳转是**有符号**语义（update_cmp_flags + JGT 等），孪生体照此写
+        if (s as i64) > (a as i64) {
+            s ^= b;
+        }
+        if s == 0 {
+            s = s.wrapping_add(7);
+        }
+        i += 1;
+    }
+    s
+}
+
 /// 嵌套表达式：右侧是子表达式，走临时寄存器路径
 #[vm_protect]
 fn d_nested(a: u64, b: u64) -> u64 {
@@ -257,5 +302,15 @@ fn each_imm_opcode_matches_contract() {
     for _ in 0..CASES {
         let a = rng.value();
         assert_eq!(d_imm_each(a), native_d_imm_each(a), "a={a}");
+    }
+}
+
+
+#[test]
+fn branch_conditions_match_contract() {
+    let mut rng = Rng(0x5EED_0009);
+    for _ in 0..2_000 {
+        let (a, b) = (rng.value(), rng.value());
+        assert_eq!(d_branch(a, b), native_d_branch(a, b), "({a}, {b})");
     }
 }

@@ -82,6 +82,19 @@ impl Compiler {
     }
 
     /// Emit fused compare-and-branch: `CMP_REG_REG_JCC <a> <b> <cond> <i16 offset>`
+    /// Emit `CMP_REG_IMM_JCC <a> <imm:u32> <cond> <i16 offset>`
+    pub(crate) fn emit_cmp_reg_imm_jcc(&mut self, a: u8, imm: u32, cond: u8, label: &str) {
+        self.emit_op(control::CMP_REG_IMM_JCC);
+        self.emit(a);
+        for byte in imm.to_le_bytes() {
+            self.emit(byte);
+        }
+        self.emit(cond);
+        let fixup_pos = self.pos();
+        self.emit_u16(0); // Placeholder
+        self.fixups.push((fixup_pos, label.to_string()));
+    }
+
     pub(crate) fn emit_cmp_reg_reg_jcc(&mut self, a: u8, b: u8, cond: u8, label: &str) {
         self.emit_op(control::CMP_REG_REG_JCC);
         self.emit(a);

@@ -257,6 +257,12 @@ pub mod control {
     pub const SHL_REG_IMM: u8 = 0xB0;
     /// SHR_REG_IMM: `r = r >> imm`（wrapping_shr）
     pub const SHR_REG_IMM: u8 = 0xB1;
+
+    /// CMP_REG_IMM_JCC: 寄存器与 u32 立即数比较并按条件相对跳转，
+    /// 等价 `PUSH_REG a; PUSH_IMM32 imm; CMP; DROP; DROP; Jcc cond`（栈中性）。
+    /// `imm = 0` 时即零值测试（cond 0/1 → JZ/JNZ），是 `if cond` 的主力形态。
+    /// Format: CMP_REG_IMM_JCC <a:u8> <imm:u32> <cond:u8> <offset:i16>
+    pub const CMP_REG_IMM_JCC: u8 = 0xB2;
 }
 
 /// Special Operations (Anti-analysis)

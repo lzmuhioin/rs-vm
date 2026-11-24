@@ -5,7 +5,7 @@
 //!
 //! 先于实现写（TDD）：没有 handler 时引擎把它当未知 opcode，返回 `InvalidOpcode`，测试即红。
 
-use aegis_vm::build_config::opcodes::{arithmetic, exec, fused, stack};
+use aegis_vm::build_config::opcodes::{arithmetic, control, exec, fused, stack};
 use aegis_vm::execute;
 
 /// 把 (寄存器号, 值) 写成 `PUSH_IMM <u64>; POP_REG <r>` 序列
@@ -230,6 +230,91 @@ fn every_reg_imm_op_matches_its_stack_equivalent() {
                 fused_imm_case(*fused_op, a, imm),
                 stack_imm_case(stack_ops[i], a, imm),
                 "op 0x{fused_op:02X} 在 ({a}, {imm}) 上与栈式不一致"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CMP_REG_IMM_JCC：`PUSH_REG a; PUSH_IMM32 imm; CMP; DROP; DROP; Jcc cond`
+// 一条指令同时覆盖「寄存器 vs 字面量」与「零值测试」（imm = 0 即 JZ/JNZ）
+// ---------------------------------------------------------------------------
+
+/// cond 选择子 → 栈式跳转指令（用于等价性对照）
+fn stack_jcc(cond: u8) -> u8 {
+    match cond {
+        0 => control::JZ,
+        1 => control::JNZ,
+        2 => control::JGT,
+        3 => control::JLT,
+        4 => control::JGE,
+        _ => control::JLE,
+    }
+}
+
+/// r0 = a；CMP_REG_IMM_JCC r0, imm, cond, +3；命中 push 7，未命中 push 9
+fn cmp_imm_case(a: u64, imm: u32, cond: u8) -> u64 {
+    let mut code = load(&[(0, a)]);
+    code.extend_from_slice(&[fused::CMP_REG_IMM_JCC, 0]);
+    code.extend_from_slice(&imm.to_le_bytes());
+    code.push(cond);
+    code.extend_from_slice(&[0x03, 0x00]); // 跳到 PUSH_IMM8 7
+    code.extend_from_slice(&[stack::PUSH_IMM8, 9, exec::HALT, stack::PUSH_IMM8, 7]);
+    run(code)
+}
+
+/// 同一组操作数的栈式写法
+fn cmp_imm_stack_case(a: u64, imm: u32, cond: u8) -> u64 {
+    let mut code = load(&[(0, a)]);
+    code.extend_from_slice(&[stack::PUSH_REG, 0, stack::PUSH_IMM32]);
+    code.extend_from_slice(&imm.to_le_bytes());
+    code.extend_from_slice(&[control::CMP, stack::DROP, stack::DROP]);
+    code.push(stack_jcc(cond));
+    code.extend_from_slice(&[0x03, 0x00]);
+    code.extend_from_slice(&[stack::PUSH_IMM8, 9, exec::HALT, stack::PUSH_IMM8, 7]);
+    run(code)
+}
+
+#[test]
+fn cmp_reg_imm_jcc_takes_all_six_conditions() {
+    // 5 与 7 比较：lt 成立、ge 不成立
+    assert_eq!(cmp_imm_case(5, 7, 3), 7, "5 < 7");
+    assert_eq!(cmp_imm_case(5, 7, 4), 9, "5 >= 7 不成立");
+    assert_eq!(cmp_imm_case(9, 7, 2), 7, "9 > 7");
+    assert_eq!(cmp_imm_case(7, 7, 0), 7, "7 == 7");
+    assert_eq!(cmp_imm_case(7, 7, 1), 9, "7 != 7 不成立");
+    assert_eq!(cmp_imm_case(7, 7, 5), 7, "7 <= 7");
+}
+
+#[test]
+fn cmp_reg_imm_jcc_covers_zero_test() {
+    // imm = 0：等价于 JZ / JNZ，这是 `if cond` 最常用的形态
+    assert_eq!(cmp_imm_case(0, 0, 0), 7, "0 == 0 → JZ 命中");
+    assert_eq!(cmp_imm_case(1, 0, 0), 9, "1 == 0 不成立");
+    assert_eq!(cmp_imm_case(1, 0, 1), 7, "1 != 0 → JNZ 命中");
+    assert_eq!(cmp_imm_case(0, 0, 1), 9, "0 != 0 不成立");
+}
+
+#[test]
+fn cmp_reg_imm_jcc_is_stack_neutral() {
+    let mut code = load(&[(0, 0)]);
+    code.extend_from_slice(&[stack::PUSH_IMM8, 42]);
+    code.extend_from_slice(&[fused::CMP_REG_IMM_JCC, 0]);
+    code.extend_from_slice(&0u32.to_le_bytes());
+    code.push(0); // JZ
+    code.extend_from_slice(&[0x00, 0x00]);
+    assert_eq!(run(code), 42, "比较-跳转不得动栈");
+}
+
+#[test]
+fn cmp_reg_imm_jcc_matches_stack_sequence() {
+    let values = [(0u64, 0u32), (1, 0), (7, 7), (8, 7), (7, 8), (u64::MAX, 0), (255, 255)];
+    for (a, imm) in values {
+        for cond in 0..6u8 {
+            assert_eq!(
+                cmp_imm_case(a, imm, cond),
+                cmp_imm_stack_case(a, imm, cond),
+                "a={a} imm={imm} cond={cond}"
             );
         }
     }

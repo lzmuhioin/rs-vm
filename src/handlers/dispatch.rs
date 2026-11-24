@@ -267,6 +267,10 @@ pub fn w_shr_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_shr_reg_imm(s)
 }
 
+pub fn w_cmp_reg_imm_jcc(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_cmp_reg_imm_jcc(s)
+}
+
 #[inline(always)]
 pub fn w_mul_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_mul_reg_imm(s)
@@ -614,6 +618,7 @@ pub const HANDLER_TABLE: [Handler; 256] = {
     table[0xAF] = w_xor_reg_imm;
     table[0xB0] = w_shl_reg_imm;
     table[0xB1] = w_shr_reg_imm;
+    table[0xB2] = w_cmp_reg_imm_jcc;
 
     // Special (0x40-0x45)
     table[0x40] = w_nop;

@@ -806,6 +806,7 @@ const BASE_OPCODES: &[(& str, &str, u8)] = &[
     ("fused", "XOR_REG_IMM", 0xAF),
     ("fused", "SHL_REG_IMM", 0xB0),
     ("fused", "SHR_REG_IMM", 0xB1),
+    ("fused", "CMP_REG_IMM_JCC", 0xB2),
 ];
 
 /// Critical opcodes that get handler duplication (alias opcodes)

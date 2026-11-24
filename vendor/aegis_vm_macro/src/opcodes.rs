@@ -87,6 +87,8 @@ pub mod control {
     pub const XOR_REG_IMM: u8 = 0xAF;
     pub const SHL_REG_IMM: u8 = 0xB0;
     pub const SHR_REG_IMM: u8 = 0xB1;
+    /// CMP_REG_IMM_JCC：寄存器 vs 立即数比较 + 条件跳转（栈中性）
+    pub const CMP_REG_IMM_JCC: u8 = 0xB2;
     pub const JCC_Z: u8 = 0;
     pub const JCC_NZ: u8 = 1;
     pub const JCC_GT: u8 = 2;

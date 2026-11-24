@@ -153,6 +153,21 @@ pub fn handle_cmp_reg_reg_jge(state: &mut VmState) -> VmResult<()> {
 /// Encoding: `CMP_REG_REG_JCC <a:u8> <b:u8> <cond:u8> <offset:i16>`.
 /// Sets the same flags as `CMP a, b` and branches when `cond` holds:
 /// 0=eq, 1=ne, 2=gt, 3=lt, 4=ge, 5=le (signed).
+/// 依据最近一次比较的标志位判断条件是否成立（0=eq 1=ne 2=gt 3=lt 4=ge 5=le）
+fn jcc_taken(state: &VmState, cond: u8) -> VmResult<bool> {
+    let zero = state.is_zero();
+    let sign_ne_overflow = state.is_negative() != state.is_overflow();
+    Ok(match cond {
+        0 => zero,                       // eq
+        1 => !zero,                      // ne
+        2 => !zero && !sign_ne_overflow, // gt
+        3 => sign_ne_overflow,           // lt
+        4 => !sign_ne_overflow,          // ge
+        5 => zero || sign_ne_overflow,   // le
+        _ => return Err(VmError::InvalidOpcode),
+    })
+}
+
 pub fn handle_cmp_reg_reg_jcc(state: &mut VmState) -> VmResult<()> {
     let a_idx = state.read_u8()?;
     let b_idx = state.read_u8()?;
@@ -163,20 +178,25 @@ pub fn handle_cmp_reg_reg_jcc(state: &mut VmState) -> VmResult<()> {
     let b = state.get_reg(b_idx)?;
     state.update_cmp_flags(a, b);
 
-    let zero = state.is_zero();
-    let sign_ne_overflow = state.is_negative() != state.is_overflow();
+    if jcc_taken(state, cond)? {
+        jump_relative(state, offset)
+    } else {
+        Ok(())
+    }
+}
 
-    let taken = match cond {
-        0 => zero,                          // eq
-        1 => !zero,                         // ne
-        2 => !zero && !sign_ne_overflow,    // gt
-        3 => sign_ne_overflow,              // lt
-        4 => !sign_ne_overflow,             // ge
-        5 => zero || sign_ne_overflow,      // le
-        _ => return Err(VmError::InvalidOpcode),
-    };
+/// `CMP_REG_IMM_JCC <a> <imm> <cond> <offset>`：寄存器与 u32 立即数比较后按条件跳转，
+/// 等价 `PUSH_REG a; PUSH_IMM32 imm; CMP; DROP; DROP; Jcc cond`（栈中性）。
+pub fn handle_cmp_reg_imm_jcc(state: &mut VmState) -> VmResult<()> {
+    let a_idx = state.read_u8()?;
+    let imm = state.read_u32()? as u64;
+    let cond = state.read_u8()?;
+    let offset = state.read_i16()?;
 
-    if taken {
+    let a = state.get_reg(a_idx)?;
+    state.update_cmp_flags(a, imm);
+
+    if jcc_taken(state, cond)? {
         jump_relative(state, offset)
     } else {
         Ok(())
