@@ -286,8 +286,34 @@ impl Compiler {
                     self.register_struct_from_item(item_struct)?;
                 }
                 syn::Stmt::Expr(expr, _) => {
-                    self.compile_expr(expr)?;
-                    self.emit_drop();  // Always drop expression result
+                    // 语句位置的赋值：结果立刻被丢弃，直接编译赋值本体，
+                    // 省掉 `emit_zero()`（PUSH_IMM8 0）+ `emit_drop()` 这 2 条白花指令。
+                    match expr {
+                        syn::Expr::Assign(assign) => {
+                            self.compile_assignment(&assign.left, &assign.right)?;
+                        }
+                        syn::Expr::Binary(bin)
+                            if matches!(
+                                bin.op,
+                                syn::BinOp::AddAssign(_)
+                                    | syn::BinOp::SubAssign(_)
+                                    | syn::BinOp::MulAssign(_)
+                                    | syn::BinOp::DivAssign(_)
+                                    | syn::BinOp::RemAssign(_)
+                                    | syn::BinOp::BitXorAssign(_)
+                                    | syn::BinOp::BitAndAssign(_)
+                                    | syn::BinOp::BitOrAssign(_)
+                                    | syn::BinOp::ShlAssign(_)
+                                    | syn::BinOp::ShrAssign(_)
+                            ) =>
+                        {
+                            self.compile_assign_op(&bin.left, &bin.op, &bin.right)?;
+                        }
+                        _ => {
+                            self.compile_expr(expr)?;
+                            self.emit_drop();  // Always drop expression result
+                        }
+                    }
                 }
                 syn::Stmt::Local(local) => {
                     self.compile_local(local)?;

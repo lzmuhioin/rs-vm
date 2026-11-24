@@ -694,6 +694,37 @@ mod reg_binop_tests {
         );
     }
 
+    /// 赋值语句样本：循环里两句赋值，每句当前白花 `PUSH_IMM8 0` + `DROP`
+    fn compile_assign_stmt_sample() -> Vec<u8> {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn sample(n: u64) -> u64 {
+                let mut s = 0u64;
+                let mut i = 0u64;
+                while i < n {
+                    s = s + i;
+                    i = i + 1;
+                }
+                s
+            }
+        })
+        .expect("parse assign sample fn");
+        compile_function_full(&func, false, false).expect("compile assign sample fn")
+    }
+
+    /// `i = i + 1;` 作为语句时结果被立刻丢弃，不该再发 `emit_zero()` + `DROP`。
+    /// 并且这两个白花指令是「每条赋值 3 字节」，循环里会成倍放大。
+    #[test]
+    fn assignment_statement_does_not_emit_unit_and_drop() {
+        let code = compile_assign_stmt_sample();
+        // 实测：带 unit+drop 是 46 字节；去掉后 40 字节（每条赋值省 3 字节 = PUSH_IMM8 2 + DROP 1）。
+        // 预算 42 能抓出「任意一条赋值回退到 unit+drop」。
+        assert!(
+            code.len() <= 42,
+            "赋值语句不应再发 unit+drop（回退版 46，修复版 40），实际 {} 字节",
+            code.len()
+        );
+    }
+
     /// 数组读写样本：`s = s + buf[i]`（VEC_GET_REG）+ `buf[i] = s`（VEC_SET_REG）
     fn compile_array_sample() -> Vec<u8> {
         let func: syn::ItemFn = syn::parse2(quote! {

@@ -37,6 +37,7 @@ impl Compiler {
 
         let shuffled = self.opcode_table.encode(base_opcode);
         self.bytecode.push(shuffled);
+
     }
 
     /// Emit a single byte

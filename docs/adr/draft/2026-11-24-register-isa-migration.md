@@ -183,26 +183,39 @@ dispatch 少了、字节多了，最终更慢。
 结论/取舍规则：**融合形态只在「替掉≥2 次压栈 + 1 次弹栈」时用**（数组读写符合），
 在「小立即数 + 单个 let 绑定」这类场景反而要留在栈路径上。
 
-### 阶段一收口：实测显示剩余栈搬运属保护层，不再扩指令（2026-11-24）
+### 阶段一六批：赋值语句不再发 unit + drop（2026-11-24）
 
-融合与写回都做完后重测指令构成，目的是决定还要不要继续加指令。结论是不加，依据是下面这组对照。
+重测指令构成时发现每条**赋值语句**白花 2 条指令：`Expr::Assign` 在 `expr.rs` 里发
+`emit_zero()`（`PUSH_IMM8 0`，2 字节）表示「赋值表达式的值」，语句层 `compile_block_stmt` 随后
+`emit_drop()` 把它丢掉——位置就是 `syn::Stmt::Expr` 分支里的 `Always drop expression result`。
 
-| 负载（1000 次迭代 × 200 轮） | Standard（默认保护） | Debug（关代入、明文） |
-|---|---|---|
-| 数组读写 `s=s+buf[idx]; buf[idx]=s` | **31.2 条/迭代** | **17.2 条/迭代** |
-| 写回 `buf[idx]=buf[idx]+i` | 33.0 条/迭代 | 20.0 条/迭代 |
+语句位置的赋值结果本来就要丢弃，所以直接编赋值本体：`compile_block_stmt` 里对
+`Expr::Assign` 与十种复合赋值（`+=` 等 `syn::BinOp` 变体）改走 `compile_assignment` /
+`compile_assign_op`，不再走 `compile_expr + emit_drop`。尾表达式位置（`Stmt::Expr(expr, None)`）
+不变，仍然产出 unit。
 
-差额是保护层注入。三个注入源都在 `emit_op` 里：`substitution.rs::emit_deterministic` 的死代码
-（`PUSH_IMM8 x; DROP`、`PUSH_IMM8;PUSH_IMM8;DROP;DROP`）、按位置熵 10% 概率插的 `NOP`、
-以及 Standard 以上的指令代入。
+- 单条赋值省 3 字节（`PUSH_IMM8` 2 + `DROP` 1）；`tests` 里用字节预算抓：46 → **40**，预算 ≤42；
+- 指令数（1000 次迭代 × 200 轮）：数组读写 31.2 → **17.1 条/迭代（−45%）**，
+  写回 33.0 → **19.0（−42%）**，Debug 级写回 20.0 → **13.0（−35%）**；
+- 端到端 A/B（4 轮交替）：`bitmix` 48–51x → **24.6–25.8x（−49%，1.96x）**、
+  `sum_local` 80–91k → **47–49k（1.83x）**、`bitmix_imm` 40 → 20.5–22.1（1.9x）、
+  `fib` 472–487 → 286–294（1.65x）、`arrloop` 466–480 → 330–382（1.36x）、
+  `writeback` 258–270 → 190–197（1.35x）、`sum` −26%、`branchy` −15%；
+  直线代码的 `arith` 在噪声内（那里赋值少）。门禁 912 passed / 0 failed。
 
-Debug 下 `PUSH_IMM8` 23.5% + `DROP` 17.7%（数组读写）、20% + 15%（写回）——**这些不是编译器产物**，
-是死代码注入；真实编译产物每迭代约 9–10 条，其中绝大部分已是融合形态。所以：
-继续扩 ISA 会被保护层稀释，而减少注入等于降低保护强度（红线）。**ISA 迁移到此收口。**
+这一批的收益超过前面五批 ISA 改动之和——因为它命中的是**每条语句的固定开销**，而不是某个指令形态。
 
-附带一条待确认：`#[vm_protect(debug)]` 下 `while i < n { let idx = i & 15; i = idx + 1; }`
-运行时返回 `E12`（同样形态的 `split0` 无 `let`、`split2/3` 有数组却正常）。仓内 911 条用例全绿，
-怀疑是 Debug 级别的边角问题，未进一步确认，也未改动。
+### 更正：上一版把 unit 值误判成保护层死代码
+
+本文件曾写过「Debug 级下 `PUSH_IMM8`+`DROP` 占 41%，属保护层死代码，故不再扩 ISA」。**该归因是错的**：
+`DeadCodeInsertion::emit_deterministic` 由 `emit_op` 里的 `self.subst.is_enabled()` 把关，Debug 级
+（`use_substitution = false`）根本不执行；Debug 下看到的那些 `PUSH_IMM8`/`DROP` 就是上面的 unit 值。
+改正后的实测：数组读写 Standard **17.1** / Debug 13.0 条每迭代，写回 Standard 19.0 / Debug 13.0。
+
+同时更正一条当时未经核实的推断：死代码注入率**没有**偏离设计。按 `position` 模拟 10 万个位置，
+注入率 10.0%、最大注入间隔 105，与注释声称的 10% 一致（先前「实测 30–40%」是把 unit 值算进去的错误结论）。
+
+保护层确实存在且不该动的部分：`emit_op` 里 10% 概率的 Junk NOP，以及 Standard 以上的指令代入与死代码注入。
 
 ## 备选方案
 
