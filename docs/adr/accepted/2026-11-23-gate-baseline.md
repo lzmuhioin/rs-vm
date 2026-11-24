@@ -30,5 +30,11 @@ Status: accepted — 以 `./scripts/check.sh` 作为本地与 CI 的唯一自查
 - 基线现在可复现：任何人在干净 checkout 上跑 `./scripts/check.sh` 得到与 CI 相同的判定。
 - 代价一：升级 rustc 后可能出现新的默认 lint，提交前必须先修——这是「零告警」的固有成本。
 - 代价二：`fmt` 漂移仍在，只能靠「只格式化触碰文件」的人工纪律，门禁不兜底。
-- 已知限制：`Cargo.lock` 未入库（库 crate 惯例），依赖版本漂移只在 CI 首次构建暴露；`rust-toolchain.toml` 未钉，本机 1.99.1 与 CI runner 的 rustc 版本可能不同，同一份代码在两边得到不同 lint 集合的情况无法被门禁发现。
+- 已知限制：`Cargo.lock` 未入库（库 crate 惯例），依赖版本漂移只在 CI 首次构建暴露；`rust-toolchain.toml` 仍未钉——本机已升到 1.100.0 与 runner 对齐，但下次 runner 升级会重演「本机绿、CI 红」，详见下面的验证一节。
 - 回归指针：`scripts/check.sh`（主门禁）、`scripts/validate_adr.py`（决议格式）、`scripts/verify-gates.py`（门禁自证，含用例数下限 8）。
+
+## 验证
+
+- 2026-11-23 把本机 clippy 从 1.99.1 升到 1.100.0（与 CI runner 同版本）后，CI 的红在本机复现：`needless_range_loop` 在 `build.rs` 11 处、`src/whitebox/{generator,tables}.rs` 19 处，另有 1 条 `unused dependency 'hex'`。这批全部按 clippy 建议改成迭代器，**未留任何 `#[allow]`**；`hex` 依赖已删（全仓无 `hex::` 引用）。
+- 等价性用一次性探针证（跑完即删）：`MixingBijection32::apply/apply_inverse` 在 500 组随机矩阵 × 1024 个输入上新旧写法逐值相同；8-bit / 4-bit 编码表的填充顺序在 200 个种子下逐项相同。
+- 由此得到一条运行事实：`ANTICHEAT_BUILD_KEY` 只固定 build seed，**熵池与增量仍取 `/dev/urandom`**，所以 `build_config.rs` 不能逐字节复现——比较两份构建产物时不能拿它当判据（实测同一 env 下两次构建，文件第一处差异在第 7 行的熵池）。

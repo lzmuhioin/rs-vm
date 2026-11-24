@@ -70,9 +70,11 @@ CI（`.github/workflows/rust.yml`）：`build+test`（默认特性）、`async_v
 
 ## 已知基线（写文档/改门禁时别当成新问题）
 
-- `cargo clippy --all-targets -- -D warnings`：**绿**（2026-11-23 修掉 17 处：lib 2、example 1、tests 14；清单见 `docs/adr/accepted/2026-11-23-gate-baseline.md`）。
+- `cargo clippy --all-targets -- -D warnings`：**绿**（2026-11-23 修掉 17 处 + 30 处；清单见 `docs/adr/accepted/2026-11-23-gate-baseline.md`）。本机 clippy 已升到 1.100.0（与 CI runner 一致），未使用 `#[allow]` 豁免。
+- 依赖：`hex` 已删除（`build-dependencies` / `dev-dependencies` 均无 `hex::` 引用，clippy 1.100 报 unused dependency）。
 - `cargo fmt --check`：**红，723 处差异**；因此不进主门禁（见 `docs/adr/accepted/2026-11-23-gate-baseline.md`）。
 - 未钉 `rust-toolchain.toml`；`Cargo.lock` 被 gitignore（库 crate 惯例），依赖漂移只在 CI 首次构建时暴露。
+- **可复现构建只覆盖 seed**：`ANTICHEAT_BUILD_KEY` 固定 build seed 与 opcode 置换，但熵池/增量取自 `/dev/urandom`，`build_config.rs` 不逐字节可复现。
 
 ## 提交约定
 
