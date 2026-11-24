@@ -24,10 +24,6 @@ spin = { version = "0.10", default-features = false, features = ["once"] }
 [build-dependencies]
 hmac = "0.13"
 sha2 = "0.11"
-hex = "0.4"
-
-[dev-dependencies]
-hex = "0.4"
 
 [features]
 default = ["std", "handler_mutation", "whitebox"]

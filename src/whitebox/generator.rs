@@ -149,29 +149,29 @@ fn generate_encodings(rng: &mut SeededRng) -> InternalEncodings {
     };
 
     // Generate 8-bit bijections for round outputs
-    for round in 0..AES_ROUNDS {
-        for pos in 0..AES_BLOCK_SIZE {
+    for row in encodings.round_output.iter_mut() {
+        for slot in row.iter_mut() {
             let perm = rng.random_permutation(256);
             let mut bij = Bijection8::identity();
             for (i, &p) in perm.iter().enumerate() {
                 bij.forward[i] = p;
                 bij.inverse[p as usize] = i as u8;
             }
-            encodings.round_output[round][pos] = bij;
+            *slot = bij;
         }
     }
 
     // Generate 4-bit bijections for XOR tables
-    for round in 0..9 {
-        for table in 0..96 {
-            for nibble in 0..2 {
+    for round_tables in encodings.nibble_encodings.iter_mut() {
+        for table in round_tables.iter_mut() {
+            for slot in table.iter_mut() {
                 let perm = rng.random_permutation(16);
                 let mut bij = Bijection4::identity();
                 for (i, &p) in perm.iter().enumerate() {
                     bij.forward[i] = p;
                     bij.inverse[p as usize] = i as u8;
                 }
-                encodings.nibble_encodings[round][table][nibble] = bij;
+                *slot = bij;
             }
         }
     }
@@ -422,17 +422,7 @@ mod tests {
         let tables = generate_tables(&key, seed);
 
         // Verify tables are not all zeros
-        let mut has_nonzero_tybox = false;
-        for round in 0..9 {
-            for pos in 0..16 {
-                for x in 0..256 {
-                    if tables.tybox[round][pos][x] != 0 {
-                        has_nonzero_tybox = true;
-                        break;
-                    }
-                }
-            }
-        }
+        let has_nonzero_tybox = tables.tybox.iter().flatten().flatten().any(|&v| v != 0);
         assert!(has_nonzero_tybox, "Ty-boxes should have non-zero values");
 
         // Verify memory size
@@ -448,17 +438,7 @@ mod tests {
         let tables = generate_tables_lite(&key, seed);
 
         // Verify tables are populated
-        let mut has_nonzero = false;
-        for round in 0..AES_ROUNDS {
-            for pos in 0..16 {
-                for x in 0..256 {
-                    if tables.tbox[round][pos][x] != 0 {
-                        has_nonzero = true;
-                        break;
-                    }
-                }
-            }
-        }
+        let has_nonzero = tables.tbox.iter().flatten().flatten().any(|&v| v != 0);
         assert!(has_nonzero, "T-boxes should have non-zero values");
 
         // Verify smaller memory footprint

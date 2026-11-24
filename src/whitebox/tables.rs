@@ -218,10 +218,10 @@ impl MixingBijection32 {
     /// Apply mixing bijection to 32-bit value
     pub fn apply(&self, input: u32) -> u32 {
         let mut result = 0u32;
-        for i in 0..32 {
+        for (i, row) in self.matrix.iter().enumerate() {
             let mut bit = 0u8;
-            for j in 0..32 {
-                if self.matrix[i][j] != 0 && (input >> j) & 1 != 0 {
+            for (j, &coeff) in row.iter().enumerate() {
+                if coeff != 0 && (input >> j) & 1 != 0 {
                     bit ^= 1;
                 }
             }
@@ -233,10 +233,10 @@ impl MixingBijection32 {
     /// Apply inverse mixing bijection
     pub fn apply_inverse(&self, input: u32) -> u32 {
         let mut result = 0u32;
-        for i in 0..32 {
+        for (i, row) in self.inverse.iter().enumerate() {
             let mut bit = 0u8;
-            for j in 0..32 {
-                if self.inverse[i][j] != 0 && (input >> j) & 1 != 0 {
+            for (j, &coeff) in row.iter().enumerate() {
+                if coeff != 0 && (input >> j) & 1 != 0 {
                     bit ^= 1;
                 }
             }

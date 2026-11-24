@@ -8,12 +8,6 @@
 //! - WATERMARK: 128-bit steganographic watermark
 //! - OPCODE_TABLE: Shuffled opcode mapping for polymorphic VM
 
-// 生成器里大量「按行列下标写入」的矩阵/寄存器表循环（MixingBijection 的 32×32 位矩阵、
-// register_map、WBC 编码表）。改成迭代器会把「哪一维对应哪一维」的布局线索打散，
-// 而这段代码的读者正是要核对按位布局。CI runner 的 clippy 比本机新，会判
-// needless_range_loop（工具链未钉版），故在文件级豁免并留此理由。
-#![allow(clippy::needless_range_loop)]
-
 use std::env;
 use std::fs::File;
 use std::io::{Write, BufWriter};
@@ -488,8 +482,8 @@ fn write_build_history(
 
     // Register mapping
     writeln!(file, "Register Mapping (logical -> physical):").ok();
-    for i in 0..8 {
-        writeln!(file, "  R{} -> physical {}", i, register_map.map[i]).ok();
+    for (i, physical) in register_map.map.iter().enumerate() {
+        writeln!(file, "  R{} -> physical {}", i, physical).ok();
     }
     writeln!(file).ok();
 
@@ -1794,10 +1788,10 @@ impl MixingBijection32 {
 
     fn apply(&self, input: u32) -> u32 {
         let mut result = 0u32;
-        for i in 0..32 {
+        for (i, row) in self.matrix.iter().enumerate() {
             let mut bit = 0u8;
-            for j in 0..32 {
-                if self.matrix[i][j] != 0 && (input >> j) & 1 != 0 { bit ^= 1; }
+            for (j, &coeff) in row.iter().enumerate() {
+                if coeff != 0 && (input >> j) & 1 != 0 { bit ^= 1; }
             }
             result |= (bit as u32) << i;
         }
@@ -1806,10 +1800,10 @@ impl MixingBijection32 {
 
     fn apply_inverse(&self, input: u32) -> u32 {
         let mut result = 0u32;
-        for i in 0..32 {
+        for (i, row) in self.inverse.iter().enumerate() {
             let mut bit = 0u8;
-            for j in 0..32 {
-                if self.inverse[i][j] != 0 && (input >> j) & 1 != 0 { bit ^= 1; }
+            for (j, &coeff) in row.iter().enumerate() {
+                if coeff != 0 && (input >> j) & 1 != 0 { bit ^= 1; }
             }
             result |= (bit as u32) << i;
         }
@@ -1968,28 +1962,28 @@ fn generate_encodings(rng: &mut BuildRng) -> InternalEncodings {
         nibble_encodings: [[[Bijection4::identity(); 2]; 96]; 9],
     };
 
-    for round in 0..AES_ROUNDS {
-        for pos in 0..AES_BLOCK_SIZE {
+    for row in encodings.round_output.iter_mut() {
+        for slot in row.iter_mut() {
             let perm = rng.random_permutation(256);
             let mut bij = Bijection8::identity();
             for (i, &p) in perm.iter().enumerate() {
                 bij.forward[i] = p;
                 bij.inverse[p as usize] = i as u8;
             }
-            encodings.round_output[round][pos] = bij;
+            *slot = bij;
         }
     }
 
-    for round in 0..9 {
-        for table in 0..96 {
-            for nibble in 0..2 {
+    for round_tables in encodings.nibble_encodings.iter_mut() {
+        for table in round_tables.iter_mut() {
+            for slot in table.iter_mut() {
                 let perm = rng.random_permutation(16);
                 let mut bij = Bijection4::identity();
                 for (i, &p) in perm.iter().enumerate() {
                     bij.forward[i] = p;
                     bij.inverse[p as usize] = i as u8;
                 }
-                encodings.nibble_encodings[round][table][nibble] = bij;
+                *slot = bij;
             }
         }
     }
@@ -2006,7 +2000,7 @@ fn generate_mixing_bijections(rng: &mut BuildRng) -> [MixingBijection32; 9] {
             let j = (rng.next_u64() as usize) % 32;
             if i != j {
                 for k in 0..32 { mb.matrix[i][k] ^= mb.matrix[j][k]; }
-                for k in 0..32 { mb.inverse[k][j] ^= mb.inverse[k][i]; }
+                for row in mb.inverse.iter_mut() { row[j] ^= row[i]; }
             }
         }
     }
