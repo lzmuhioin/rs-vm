@@ -179,6 +179,8 @@ pub struct Compiler {
     pub(crate) bytecode: Vec<u8>,
     /// Function argument name -> input buffer offset
     pub(crate) arg_offsets: BTreeMap<String, usize>,
+    /// 标量参数在序言里读进寄存器后的映射（名字 → 寄存器）。
+    pub(crate) arg_regs: BTreeMap<String, u8>,
     /// Scoped variable storage - Vec of scopes, each scope maps name -> VarInfo
     /// Innermost scope is at the end of the Vec
     pub(crate) scopes: Vec<BTreeMap<String, VarInfo>>,
@@ -239,6 +241,7 @@ impl Compiler {
         Self {
             bytecode: Vec::new(),
             arg_offsets: BTreeMap::new(),
+            arg_regs: BTreeMap::new(),
             scopes,
             var_types: BTreeMap::new(),
             struct_defs: BTreeMap::new(),
@@ -293,6 +296,24 @@ impl Compiler {
     pub(crate) fn register_arg(&mut self, name: &str) {
         self.arg_offsets.insert(name.to_string(), self.next_arg_offset);
         self.next_arg_offset += 8;
+    }
+
+    /// 把标量参数在序言里一次性读进寄存器。
+    ///
+    /// 参数原本是 `InputOffset`：每次使用都发一条 `NATIVE_READ`（一次 native 调用）。
+    /// 函数参数不可变，所以在入口读一次即可；寄存器快满时放弃提升，退回 `InputOffset`。
+    pub(crate) fn hoist_arg(&mut self, name: &str) {
+        if self.next_local_reg >= 240 {
+            return;
+        }
+        let Some(&offset) = self.arg_offsets.get(name) else {
+            return;
+        };
+        let reg = self.next_local_reg;
+        self.next_local_reg += 1;
+        self.emit_native_read(offset as u16);
+        self.emit_pop_reg(reg);
+        self.arg_regs.insert(name.to_string(), reg);
     }
 
     // =========================================================================
@@ -504,6 +525,10 @@ impl Compiler {
                 _ => Some(VarLocation::Register(info.reg)),
             };
         }
+        // Check hoisted arguments (read once in the prologue)
+        if let Some(&reg) = self.arg_regs.get(name) {
+            return Some(VarLocation::Register(reg));
+        }
         // Check arguments
         if let Some(&offset) = self.arg_offsets.get(name) {
             return Some(VarLocation::InputOffset(offset));
@@ -607,7 +632,11 @@ pub fn compile_function_with_natives(func: &ItemFn, mba_enabled: bool, substitut
     for arg in &func.sig.inputs {
         if let FnArg::Typed(pat_type) = arg {
             if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                compiler.register_arg(&pat_ident.ident.to_string());
+                let name = pat_ident.ident.to_string();
+                compiler.register_arg(&name);
+                if is_hoistable_arg(&pat_type.ty) {
+                    compiler.hoist_arg(&name);
+                }
             }
         }
     }
@@ -621,4 +650,55 @@ pub fn compile_function_with_natives(func: &ItemFn, mba_enabled: bool, substitut
     let native_collector = std::mem::take(&mut compiler.native_collector);
 
     Ok((bytecode, native_collector))
+}
+
+#[cfg(test)]
+mod arg_prologue_tests {
+    use super::*;
+    use quote::quote;
+
+    /// 参数作边界的 while 循环：参数应在序言里一次性读进寄存器，
+    /// 循环体内不得再出现 NATIVE_READ。
+    fn compile_sample() -> Vec<u8> {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn sample(n: u64) -> u64 {
+                let mut i = 0u64;
+                while i < n {
+                    i = i + 1;
+                }
+                i
+            }
+        })
+        .expect("parse sample fn");
+        compile_function_full(&func, false, false).expect("compile sample fn")
+    }
+
+    #[test]
+    fn arg_bound_loop_bytecode_budget() {
+        let code = compile_sample();
+        assert!(
+            code.len() <= 45,
+            "参数边界循环的字节码应被压到 45 字节以内，实际 {} 字节",
+            code.len()
+        );
+    }
+
+    /// 粗略统计某 opcode 值在字节码里出现的次数（操作数可能误计，故断言用上界）。
+    fn count_opcode(code: &[u8], op: u8) -> usize {
+        code.iter().filter(|&&b| b == op).count()
+    }
+}
+
+/// 只提升 8 字节标量参数；结构体/切片/引用参数仍按 `InputOffset` 走原路径。
+fn is_hoistable_arg(ty: &syn::Type) -> bool {
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+    matches!(
+        segment.ident.to_string().as_str(),
+        "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64" | "usize" | "bool"
+    )
 }

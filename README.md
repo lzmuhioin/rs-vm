@@ -215,6 +215,9 @@ Virtualization comes with a cost. RustAegis is designed for **security**, not sp
     *   **per loop iteration: ~67 ns** — a `for` loop compiles to ~11 VM instructions; the loop condition and increment are fused superinstructions (`CMP_REG_REG_JGE`, `INC_REG`) as of 0.2.53.
     *   **cold start: 1–2 ms per protected function, once per process** — white-box table init, key derivation, AES-GCM decrypt, integrity hash; afterwards the decrypted bytecode is cached in a `SpinOnce`.
 
+    Round-4 argument prologue: scalar arguments are read into registers once at function entry
+    instead of emitting `NATIVE_READ` at every use site. Argument-bound loops: **−48%** (measured A/B),
+    and it is what finally makes round-3's `CMP_REG_REG_JCC` fire on `while i < n`.
     Round-3 `CMP_REG_REG_JCC` (generic register compare-and-branch for `while`/`if` conditions)
     halves local-bound loops (measured A/B: 192 000x → 97 000x) but does **not** fire when the loop
     bound is a function argument, because arguments are read through `NATIVE_READ` rather than
@@ -357,7 +360,10 @@ let result = execute_async(&bytecode, &input)?;
   Measured (A/B, 5 alternating rounds): loop-heavy −33%, iterative `fib(20)` −20%.
 - **Superinstruction fusion, round 3**: `CMP_REG_REG_JCC` replaces the ~10-instruction
   `while`/`if` condition sequence with one dispatch when both operands are registers.
-  Local-bound loops: **−49%**. Argument-bound loops are unaffected (see the cost model note).
+  Local-bound loops: **−49%**.
+- **Argument prologue (0.2.53)**: scalar args are hoisted into registers at entry, so `while i < n`
+  no longer pays a `NATIVE_READ` per iteration and the round-3 fusion applies. Argument-bound
+  loops: **−48%** (A/B).
 - **`aegis_vm_macro` 0.2.52** is now vendored in `vendor/aegis_vm_macro` so the emitting side and
   the runtime can evolve together. New opcodes are **appended** to `BASE_OPCODES`, so every
   pre-existing opcode keeps its shuffled value — old bytecode stays valid.

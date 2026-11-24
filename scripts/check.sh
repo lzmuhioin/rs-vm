@@ -26,6 +26,8 @@ if [ "$docs_only" -eq 0 ]; then
   cargo clippy --all-targets -- -D warnings
   echo "== cargo test =="
   cargo test --quiet
+  echo "== cargo test（vendor/aegis_vm_macro 编译器单测）=="
+  (cd vendor/aegis_vm_macro && cargo test --quiet)
 fi
 
 echo "== 文档门禁 =="
