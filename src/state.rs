@@ -158,14 +158,15 @@ impl<'a> VmState<'a> {
         Self {
             // Pre-allocate registers for common case
             regs: vec![0u64; DEFAULT_REGISTER_CAPACITY],
-            // Heap with default capacity (grows on demand)
-            heap: Vec::with_capacity(DEFAULT_HEAP_CAPACITY),
+            // Heap grows on demand: most protected functions never touch it, so do not
+            // pay a 4 KiB allocation on every call (measured: 3 of 5 per-call allocations).
+            heap: Vec::new(),
             heap_ptr: 0,
             heap_limit: DEFAULT_HEAP_SIZE,
-            free_list: Vec::with_capacity(16), // Pre-allocate for common case
-            // Stacks
+            free_list: Vec::new(),
+            // Stacks: the value stack is used by nearly every function, keep it pre-sized.
             stack: Vec::with_capacity(64),
-            call_stack: Vec::with_capacity(16),
+            call_stack: Vec::new(),
             // Execution
             ip: 0,
             flags: 0,
