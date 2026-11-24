@@ -144,3 +144,41 @@ fn fused_arithmetic_sets_zero_flag() {
     ];
     assert_eq!(execute(&code, &[]).unwrap(), 9, "0+0 后 JZ 应跳转");
 }
+
+// ---- CMP_REG_REG_JCC：通用比较-跳转 ----
+// cond: 0=eq 1=ne 2=gt 3=lt 4=ge 5=le（有符号）
+
+#[test]
+fn cmp_reg_reg_jcc_all_conditions() {
+    // r0=5, r1=3 → eq:F ne:T gt:T lt:F ge:T le:F
+    let cases: [(u8, bool); 6] = [
+        (0, false), (1, true), (2, true), (3, false), (4, true), (5, false),
+    ];
+    for (cond, expect_jump) in cases {
+        let code = [
+            stack::PUSH_IMM8, 5, stack::POP_REG, 0,
+            stack::PUSH_IMM8, 3, stack::POP_REG, 1,
+            // 条件成立则跳过「push 9」分支，落到「push 7」分支
+            fused::CMP_REG_REG_JCC, 0, 1, cond, 0x03, 0x00,
+            stack::PUSH_IMM8, 9, exec::HALT,
+            stack::PUSH_IMM8, 7, exec::HALT,
+        ];
+        let got = execute(&code, &[]).unwrap();
+        let want = if expect_jump { 7 } else { 9 };
+        assert_eq!(got, want, "cond={cond} 期望 {}", if expect_jump { "跳转" } else { "顺序" });
+    }
+}
+
+#[test]
+fn cmp_reg_reg_jcc_handles_negative() {
+    // r0=0xFF(-1), r1=2 → lt:T
+    let code = [
+        // PUSH_IMM8 是零扩展，写不出负数；用 64 位字面量 -1（u64::MAX）
+        stack::PUSH_IMM, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, stack::POP_REG, 0,
+        stack::PUSH_IMM8, 2, stack::POP_REG, 1,
+        fused::CMP_REG_REG_JCC, 0, 1, 3, 0x03, 0x00, // lt
+        stack::PUSH_IMM8, 9, exec::HALT,
+        stack::PUSH_IMM8, 7, exec::HALT,
+    ];
+    assert_eq!(execute(&code, &[]).unwrap(), 7, "-1 < 2 应为真（有符号）");
+}

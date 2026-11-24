@@ -67,6 +67,14 @@ pub mod control {
     pub const ADD_REG_REG: u8 = 0x9E;
     pub const MUL_REG_IMM: u8 = 0x9F;
     pub const MUL_REG_REG: u8 = 0xA0;
+    /// CMP_REG_REG_JCC: fused compare-and-branch with condition selector
+    pub const CMP_REG_REG_JCC: u8 = 0xA1;
+    pub const JCC_Z: u8 = 0;
+    pub const JCC_NZ: u8 = 1;
+    pub const JCC_GT: u8 = 2;
+    pub const JCC_LT: u8 = 3;
+    pub const JCC_GE: u8 = 4;
+    pub const JCC_LE: u8 = 5;
 }
 
 /// Special Operations

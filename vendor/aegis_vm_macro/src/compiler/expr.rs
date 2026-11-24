@@ -1052,7 +1052,7 @@ impl Compiler {
 
 impl Compiler {
     /// 表达式若是变量，返回其寄存器。
-    fn expr_var_reg(&self, expr: &Expr) -> Option<u8> {
+    pub(crate) fn expr_var_reg(&self, expr: &Expr) -> Option<u8> {
         let Expr::Path(path) = expr else { return None };
         if path.path.segments.len() != 1 {
             return None;

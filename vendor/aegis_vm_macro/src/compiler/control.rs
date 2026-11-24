@@ -71,16 +71,21 @@ impl Compiler {
         // Loop start
         self.mark_label(&loop_start);
 
-        // Compile condition
-        self.compile_expr(cond)?;
-        self.emit_dup();
-        self.emit_zero();
-        self.emit_xor();
-        self.emit_drop();
-        self.emit_drop();
+        // Compile condition. 两边都是寄存器的比较走融合指令：
+        // 原序列 `PUSH;PUSH;CMP/比较;DUP;ZERO;XOR;DROP;DROP;JZ` 约 10 条 → 1 条。
+        if let Some((a, b, falsy)) = self.try_falsy_reg_compare(cond) {
+            self.emit_cmp_reg_reg_jcc(a, b, falsy, &loop_end);
+        } else {
+            self.compile_expr(cond)?;
+            self.emit_dup();
+            self.emit_zero();
+            self.emit_xor();
+            self.emit_drop();
+            self.emit_drop();
 
-        // Exit if condition is false
-        self.emit_jump(control::JZ, &loop_end);
+            // Exit if condition is false
+            self.emit_jump(control::JZ, &loop_end);
+        }
 
         // Body (as statements - drop any expression result)
         self.compile_block_stmt(body)?;
@@ -1004,5 +1009,26 @@ impl Compiler {
             _ => {}
         }
         Ok(())
+    }
+}
+
+impl Compiler {
+    /// 条件若是「两个寄存器 + 比较运算符」，返回 (a, b, 条件为假时跳转的 cond 码)。
+    /// cond 码：0=eq 1=ne 2=gt 3=lt 4=ge 5=le（与运行时 `CMP_REG_REG_JCC` 一致）。
+    pub(crate) fn try_falsy_reg_compare(&self, cond: &syn::Expr) -> Option<(u8, u8, u8)> {
+        let syn::Expr::Binary(b) = cond else { return None };
+        // 条件为假时要跳出的分支，等价于「取反后的比较」
+        let falsy = match b.op {
+            syn::BinOp::Eq(_) => control::JCC_NZ,
+            syn::BinOp::Ne(_) => control::JCC_Z,
+            syn::BinOp::Lt(_) => control::JCC_GE,
+            syn::BinOp::Le(_) => control::JCC_GT,
+            syn::BinOp::Gt(_) => control::JCC_LE,
+            syn::BinOp::Ge(_) => control::JCC_LT,
+            _ => return None,
+        };
+        let a = self.expr_var_reg(&b.left)?;
+        let bb = self.expr_var_reg(&b.right)?;
+        Some((a, bb, falsy))
     }
 }

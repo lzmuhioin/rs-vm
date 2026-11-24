@@ -81,6 +81,17 @@ impl Compiler {
         self.fixups.push((fixup_pos, label.to_string()));
     }
 
+    /// Emit fused compare-and-branch: `CMP_REG_REG_JCC <a> <b> <cond> <i16 offset>`
+    pub(crate) fn emit_cmp_reg_reg_jcc(&mut self, a: u8, b: u8, cond: u8, label: &str) {
+        self.emit_op(control::CMP_REG_REG_JCC);
+        self.emit(a);
+        self.emit(b);
+        self.emit(cond);
+        let fixup_pos = self.pos();
+        self.emit_u16(0); // Placeholder
+        self.fixups.push((fixup_pos, label.to_string()));
+    }
+
     /// Emit fused increment: `INC_REG <reg>`
     ///
     /// Equivalent to `PUSH_REG r; INC; POP_REG r`.

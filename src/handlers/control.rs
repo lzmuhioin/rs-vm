@@ -147,3 +147,38 @@ pub fn handle_cmp_reg_reg_jge(state: &mut VmState) -> VmResult<()> {
         Ok(())
     }
 }
+
+/// CMP_REG_REG_JCC: fused compare-and-branch with a condition selector.
+///
+/// Encoding: `CMP_REG_REG_JCC <a:u8> <b:u8> <cond:u8> <offset:i16>`.
+/// Sets the same flags as `CMP a, b` and branches when `cond` holds:
+/// 0=eq, 1=ne, 2=gt, 3=lt, 4=ge, 5=le (signed).
+pub fn handle_cmp_reg_reg_jcc(state: &mut VmState) -> VmResult<()> {
+    let a_idx = state.read_u8()?;
+    let b_idx = state.read_u8()?;
+    let cond = state.read_u8()?;
+    let offset = state.read_i16()?;
+
+    let a = state.get_reg(a_idx)?;
+    let b = state.get_reg(b_idx)?;
+    state.update_cmp_flags(a, b);
+
+    let zero = state.is_zero();
+    let sign_ne_overflow = state.is_negative() != state.is_overflow();
+
+    let taken = match cond {
+        0 => zero,                          // eq
+        1 => !zero,                         // ne
+        2 => !zero && !sign_ne_overflow,    // gt
+        3 => sign_ne_overflow,              // lt
+        4 => !sign_ne_overflow,             // ge
+        5 => zero || sign_ne_overflow,      // le
+        _ => return Err(VmError::InvalidOpcode),
+    };
+
+    if taken {
+        jump_relative(state, offset)
+    } else {
+        Ok(())
+    }
+}

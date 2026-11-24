@@ -202,6 +202,11 @@ pub mod control {
     /// MUL_REG_REG: `dst = a * b`（等价 PUSH_REG a; PUSH_REG b; MUL; POP_REG dst）
     /// Format: MUL_REG_REG <dst:u8> <a:u8> <b:u8>
     pub const MUL_REG_REG: u8 = 0xA0;
+
+    /// CMP_REG_REG_JCC: 通用融合比较-跳转（`while`/`if` 的寄存器比较条件）。
+    /// Format: CMP_REG_REG_JCC <a:u8> <b:u8> <cond:u8> <offset:i16>
+    /// cond: 0=JZ 1=JNZ 2=JGT 3=JLT 4=JGE 5=JLE（满足条件时相对跳转）
+    pub const CMP_REG_REG_JCC: u8 = 0xA1;
 }
 
 /// Special Operations (Anti-analysis)
