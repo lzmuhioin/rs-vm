@@ -75,6 +75,8 @@ CI（`.github/workflows/rust.yml`）：`build+test`（默认特性）、`async_v
 - `cargo fmt --check`：**红，723 处差异**；因此不进主门禁（见 `docs/adr/accepted/2026-11-23-gate-baseline.md`）。
 - 未钉 `rust-toolchain.toml`；`Cargo.lock` 被 gitignore（库 crate 惯例），依赖漂移只在 CI 首次构建时暴露。
 - **可复现构建只覆盖 seed**：`ANTICHEAT_BUILD_KEY` 固定 build seed 与 opcode 置换，但熵池/增量取自 `/dev/urandom`，`build_config.rs` 不逐字节可复现。
+- **`CARGO_TARGET_DIR` 目录必须字面叫 `target`**：`build.rs::write_shared_seed` 只在 OUT_DIR 的祖先里找名叫 `target` 的目录，找不到就不写 `.anticheat_build_seed`；随后 `#[vm_protect]` 在编译期 panic（`vm-macro: Could not find shared build seed file`）。在外部 crate 里用 `#[vm_protect]`、或换 target 目录都会撞到，不是编译警告而是宏 panic。
+- **性能基线（绑核实测）**：纯算术调用 ~0.46k×、`fib(20)` ~0.72k×、`sum(2000)` ~0.1k×（standard）；per-call 固定 0.4–0.6 µs、per-VM-instruction 18–23 ns、冷启动 1–2 ms/函数。测 VM 性能必须 `taskset` 绑核，否则同一代码能差 2–4 倍。数值随机器不同，引用前重测。
 
 ## 提交约定
 
