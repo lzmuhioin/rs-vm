@@ -78,6 +78,15 @@ pub mod control {
     pub const XOR_REG_REG: u8 = 0xA7;
     pub const SHL_REG_REG: u8 = 0xA8;
     pub const SHR_REG_REG: u8 = 0xA9;
+    /// 立即数形态：r = r OP imm（u32）
+    pub const SUB_REG_IMM: u8 = 0xAA;
+    pub const DIV_REG_IMM: u8 = 0xAB;
+    pub const MOD_REG_IMM: u8 = 0xAC;
+    pub const AND_REG_IMM: u8 = 0xAD;
+    pub const OR_REG_IMM: u8 = 0xAE;
+    pub const XOR_REG_IMM: u8 = 0xAF;
+    pub const SHL_REG_IMM: u8 = 0xB0;
+    pub const SHR_REG_IMM: u8 = 0xB1;
     pub const JCC_Z: u8 = 0;
     pub const JCC_NZ: u8 = 1;
     pub const JCC_GT: u8 = 2;

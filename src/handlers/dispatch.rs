@@ -235,6 +235,38 @@ pub fn w_shr_reg_reg(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_shr_reg_reg(s)
 }
 
+pub fn w_sub_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_sub_reg_imm(s)
+}
+
+pub fn w_div_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_div_reg_imm(s)
+}
+
+pub fn w_mod_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_mod_reg_imm(s)
+}
+
+pub fn w_and_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_and_reg_imm(s)
+}
+
+pub fn w_or_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_or_reg_imm(s)
+}
+
+pub fn w_xor_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_xor_reg_imm(s)
+}
+
+pub fn w_shl_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_shl_reg_imm(s)
+}
+
+pub fn w_shr_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_shr_reg_imm(s)
+}
+
 #[inline(always)]
 pub fn w_mul_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_mul_reg_imm(s)
@@ -574,6 +606,14 @@ pub const HANDLER_TABLE: [Handler; 256] = {
     table[0xA7] = w_xor_reg_reg;
     table[0xA8] = w_shl_reg_reg;
     table[0xA9] = w_shr_reg_reg;
+    table[0xAA] = w_sub_reg_imm;
+    table[0xAB] = w_div_reg_imm;
+    table[0xAC] = w_mod_reg_imm;
+    table[0xAD] = w_and_reg_imm;
+    table[0xAE] = w_or_reg_imm;
+    table[0xAF] = w_xor_reg_imm;
+    table[0xB0] = w_shl_reg_imm;
+    table[0xB1] = w_shr_reg_imm;
 
     // Special (0x40-0x45)
     table[0x40] = w_nop;

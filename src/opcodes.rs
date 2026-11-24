@@ -239,6 +239,24 @@ pub mod control {
     /// SHR_REG_REG: `dst = a >> b`（wrapping_shr，移位量按 64 取模）
     /// Format: SHR_REG_REG <dst:u8> <a:u8> <b:u8>
     pub const SHR_REG_REG: u8 = 0xA9;
+
+    /// SUB_REG_IMM: `r = r - imm`（等价 PUSH_REG r; PUSH_IMM32 imm; SUB; POP_REG r）
+    /// Format: SUB_REG_IMM <reg:u8> <imm:u32>
+    pub const SUB_REG_IMM: u8 = 0xAA;
+    /// DIV_REG_IMM: `r = r / imm`，imm 为 0 时得 0
+    pub const DIV_REG_IMM: u8 = 0xAB;
+    /// MOD_REG_IMM: `r = r % imm`，imm 为 0 时得 0
+    pub const MOD_REG_IMM: u8 = 0xAC;
+    /// AND_REG_IMM: `r = r & imm`
+    pub const AND_REG_IMM: u8 = 0xAD;
+    /// OR_REG_IMM: `r = r | imm`
+    pub const OR_REG_IMM: u8 = 0xAE;
+    /// XOR_REG_IMM: `r = r ^ imm`
+    pub const XOR_REG_IMM: u8 = 0xAF;
+    /// SHL_REG_IMM: `r = r << imm`（wrapping_shl，移位量按 64 取模）
+    pub const SHL_REG_IMM: u8 = 0xB0;
+    /// SHR_REG_IMM: `r = r >> imm`（wrapping_shr）
+    pub const SHR_REG_IMM: u8 = 0xB1;
 }
 
 /// Special Operations (Anti-analysis)

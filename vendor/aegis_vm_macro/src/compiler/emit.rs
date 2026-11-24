@@ -544,6 +544,63 @@ impl Compiler {
     }
 
     /// 寄存器式二元算子的编译期描述：决定可用哪条融合指令、有没有立即数形式
+    /// 立即数形态统一形状：<op> reg, imm:u32
+    fn emit_binop_reg_imm(&mut self, opcode: u8, reg: u8, imm: u32) {
+        self.emit_op(opcode);
+        self.emit(reg);
+        for byte in imm.to_le_bytes() {
+            self.emit(byte);
+        }
+    }
+
+    pub(crate) fn emit_sub_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::SUB_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_div_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::DIV_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_mod_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::MOD_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_and_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::AND_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_or_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::OR_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_xor_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::XOR_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_shl_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::SHL_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_shr_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::SHR_REG_IMM, reg, imm);
+    }
+
+    /// 立即数形态的统一分派
+    pub(crate) fn emit_reg_binop_imm(&mut self, op: RegOp, dst: u8, imm: u32) {
+        match op {
+            RegOp::Add => self.emit_add_reg_imm(dst, imm),
+            RegOp::Mul => self.emit_mul_reg_imm(dst, imm),
+            RegOp::Sub => self.emit_sub_reg_imm(dst, imm),
+            RegOp::Div => self.emit_div_reg_imm(dst, imm),
+            RegOp::Mod => self.emit_mod_reg_imm(dst, imm),
+            RegOp::And => self.emit_and_reg_imm(dst, imm),
+            RegOp::Or => self.emit_or_reg_imm(dst, imm),
+            RegOp::Xor => self.emit_xor_reg_imm(dst, imm),
+            RegOp::Shl => self.emit_shl_reg_imm(dst, imm),
+            RegOp::Shr => self.emit_shr_reg_imm(dst, imm),
+        }
+    }
+
     pub(crate) fn emit_reg_binop(&mut self, op: RegOp, dst: u8, a: u8, b: u8) {
         match op {
             RegOp::Add => self.emit_add_reg_reg(dst, a, b),
@@ -643,8 +700,8 @@ impl RegOp {
         })
     }
 
-    /// 是否已有 `*_REG_IMM` 形式的融合指令
+    /// 是否已有 `*_REG_IMM` 形式的融合指令（阶段一补齐后 10 个算子全部具备）
     pub(crate) fn has_imm_form(self) -> bool {
-        matches!(self, Self::Add | Self::Mul)
+        true
     }
 }

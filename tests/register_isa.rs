@@ -141,3 +141,96 @@ fn every_reg_reg_op_matches_its_stack_equivalent() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 立即数形态：`r = r OP imm`，等价 `PUSH_REG r; PUSH_IMM32 imm; OP; POP_REG r`
+// ---------------------------------------------------------------------------
+
+/// r0 = a，然后 <op> r0, imm，最后取值
+fn fused_imm_case(op: u8, a: u64, imm: u32) -> u64 {
+    let mut code = load(&[(0, a)]);
+    code.push(op);
+    code.push(0);
+    code.extend_from_slice(&imm.to_le_bytes());
+    code.extend_from_slice(&[stack::PUSH_REG, 0]);
+    run(code)
+}
+
+/// 同一组操作数的栈式写法
+fn stack_imm_case(op: u8, a: u64, imm: u32) -> u64 {
+    let mut code = load(&[(0, a)]);
+    code.extend_from_slice(&[stack::PUSH_REG, 0, stack::PUSH_IMM32]);
+    code.extend_from_slice(&imm.to_le_bytes());
+    code.extend_from_slice(&[op, stack::POP_REG, 0]);
+    code.extend_from_slice(&[stack::PUSH_REG, 0]);
+    run(code)
+}
+
+#[test]
+fn sub_reg_imm_subtracts_in_place() {
+    assert_eq!(fused_imm_case(fused::SUB_REG_IMM, 100, 42), 58);
+    assert_eq!(fused_imm_case(fused::SUB_REG_IMM, 0, 1), u64::MAX);
+}
+
+#[test]
+fn div_and_mod_reg_imm_are_zero_safe() {
+    assert_eq!(fused_imm_case(fused::DIV_REG_IMM, 100, 7), 14);
+    assert_eq!(fused_imm_case(fused::MOD_REG_IMM, 100, 7), 2);
+    assert_eq!(fused_imm_case(fused::DIV_REG_IMM, 100, 0), 0);
+    assert_eq!(fused_imm_case(fused::MOD_REG_IMM, 100, 0), 0);
+}
+
+#[test]
+fn bitwise_and_shift_reg_imm() {
+    assert_eq!(fused_imm_case(fused::AND_REG_IMM, 0xABCD, 0x00FF), 0x00CD);
+    assert_eq!(fused_imm_case(fused::OR_REG_IMM, 0xAB00, 0x00FF), 0xABFF);
+    assert_eq!(fused_imm_case(fused::XOR_REG_IMM, 0xFFFF, 0x00FF), 0xFF00);
+    assert_eq!(fused_imm_case(fused::SHL_REG_IMM, 1, 8), 256);
+    assert_eq!(fused_imm_case(fused::SHR_REG_IMM, 256, 8), 1);
+    assert_eq!(
+        fused_imm_case(fused::SHL_REG_IMM, 1, 64),
+        1,
+        "移位量 64 回绕为 0，与栈式 SHL 一致"
+    );
+}
+
+#[test]
+fn every_reg_imm_op_matches_its_stack_equivalent() {
+    let pairs: [(u64, u32); 6] = [
+        (0, 1),
+        (1, 1),
+        (255, 8),
+        (123_456, 789),
+        (u64::MAX, 3),
+        (1_000_000, 64),
+    ];
+    let fused_ops = [
+        fused::SUB_REG_IMM,
+        fused::DIV_REG_IMM,
+        fused::MOD_REG_IMM,
+        fused::AND_REG_IMM,
+        fused::OR_REG_IMM,
+        fused::XOR_REG_IMM,
+        fused::SHL_REG_IMM,
+        fused::SHR_REG_IMM,
+    ];
+    let stack_ops = [
+        arithmetic::SUB,
+        arithmetic::DIV,
+        arithmetic::MOD,
+        arithmetic::AND,
+        arithmetic::OR,
+        arithmetic::XOR,
+        arithmetic::SHL,
+        arithmetic::SHR,
+    ];
+    for (i, fused_op) in fused_ops.iter().enumerate() {
+        for (a, imm) in pairs {
+            assert_eq!(
+                fused_imm_case(*fused_op, a, imm),
+                stack_imm_case(stack_ops[i], a, imm),
+                "op 0x{fused_op:02X} 在 ({a}, {imm}) 上与栈式不一致"
+            );
+        }
+    }
+}

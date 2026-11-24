@@ -1136,15 +1136,7 @@ impl Compiler {
                 // 右侧是立即数：dst = dst ⊕ imm
                 if let Some(imm) = Self::int_lit(&b.right) {
                     self.compile_expr_to_reg(&b.left, dst)?;
-                    match op {
-                        RegOp::Add => self.emit_add_reg_imm(dst, imm as u32),
-                        RegOp::Mul => self.emit_mul_reg_imm(dst, imm as u32),
-                        _ => {
-                            return Err(CompileError(
-                                "expr→reg: operator has no immediate form".to_string(),
-                            ))
-                        }
-                    }
+                    self.emit_reg_binop_imm(op, dst, imm as u32);
                     return Ok(());
                 }
 

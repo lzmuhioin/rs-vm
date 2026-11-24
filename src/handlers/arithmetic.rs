@@ -233,6 +233,48 @@ pub fn handle_shr_reg_reg(state: &mut VmState) -> VmResult<()> {
     binop_reg_reg(state, |a, b| a.wrapping_shr(b as u32))
 }
 
+/// 读 `reg/imm` 做二元运算并写回同一寄存器（立即数形态的统一实现）
+fn binop_reg_imm(state: &mut VmState, op: fn(u64, u64) -> u64) -> VmResult<()> {
+    let idx = state.read_u8()?;
+    let imm = state.read_u32()? as u64;
+    let result = op(state.get_reg(idx)?, imm);
+    state.set_reg(idx, result)?;
+    state.set_zero_flag(result);
+    Ok(())
+}
+
+pub fn handle_sub_reg_imm(state: &mut VmState) -> VmResult<()> {
+    binop_reg_imm(state, |a, b| a.wrapping_sub(b))
+}
+
+pub fn handle_div_reg_imm(state: &mut VmState) -> VmResult<()> {
+    binop_reg_imm(state, |a, b| a.checked_div(b).unwrap_or(0))
+}
+
+pub fn handle_mod_reg_imm(state: &mut VmState) -> VmResult<()> {
+    binop_reg_imm(state, |a, b| if b == 0 { 0 } else { a % b })
+}
+
+pub fn handle_and_reg_imm(state: &mut VmState) -> VmResult<()> {
+    binop_reg_imm(state, |a, b| a & b)
+}
+
+pub fn handle_or_reg_imm(state: &mut VmState) -> VmResult<()> {
+    binop_reg_imm(state, |a, b| a | b)
+}
+
+pub fn handle_xor_reg_imm(state: &mut VmState) -> VmResult<()> {
+    binop_reg_imm(state, |a, b| a ^ b)
+}
+
+pub fn handle_shl_reg_imm(state: &mut VmState) -> VmResult<()> {
+    binop_reg_imm(state, |a, b| a.wrapping_shl(b as u32))
+}
+
+pub fn handle_shr_reg_imm(state: &mut VmState) -> VmResult<()> {
+    binop_reg_imm(state, |a, b| a.wrapping_shr(b as u32))
+}
+
 pub fn handle_add_reg_reg(state: &mut VmState) -> VmResult<()> {
     let dst = state.read_u8()?;
     let a = state.read_u8()?;

@@ -40,6 +40,8 @@ pub use arithmetic::{
     handle_inc_reg, handle_add_reg_imm, handle_add_reg_reg, handle_mul_reg_imm, handle_mul_reg_reg,
     handle_sub_reg_reg, handle_div_reg_reg, handle_mod_reg_reg, handle_and_reg_reg,
     handle_or_reg_reg, handle_xor_reg_reg, handle_shl_reg_reg, handle_shr_reg_reg,
+    handle_sub_reg_imm, handle_div_reg_imm, handle_mod_reg_imm, handle_and_reg_imm,
+    handle_or_reg_imm, handle_xor_reg_imm, handle_shl_reg_imm, handle_shr_reg_imm,
 };
 
 // Non-mutated arithmetic handlers (always from arithmetic module)
