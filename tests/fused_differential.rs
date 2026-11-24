@@ -180,6 +180,34 @@ fn native_d_array(n: u64) -> u64 {
     total.wrapping_add(s)
 }
 
+/// 写回：RHS 是复合表达式（`buf[k] = buf[k] + i`），值先进临时寄存器再整条 VEC_SET_REG
+#[vm_protect]
+fn d_writeback(n: u64) -> u64 {
+    let mut buf = [0u64; 8];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let k = i & 7;
+        buf[k] = buf[k] + i;
+        s = s + buf[k];
+        i = i + 1;
+    }
+    s
+}
+
+fn native_d_writeback(n: u64) -> u64 {
+    let mut buf = [0u64; 8];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let k = (i & 7) as usize;
+        buf[k] = buf[k].wrapping_add(i);
+        s = s.wrapping_add(buf[k]);
+        i += 1;
+    }
+    s
+}
+
 /// 常量下标：`buf[3]` 走 VEC_GET_REG_IMM / VEC_SET_REG_IMM
 #[vm_protect]
 fn d_array_const(n: u64) -> u64 {
@@ -392,5 +420,12 @@ fn array_access_matches_contract() {
 fn array_const_index_matches_contract() {
     for n in [0u64, 1, 2000] {
         assert_eq!(d_array_const(n), native_d_array_const(n), "n={n}");
+    }
+}
+
+#[test]
+fn writeback_matches_contract() {
+    for n in [0u64, 1, 8, 9, 2000] {
+        assert_eq!(d_writeback(n), native_d_writeback(n), "n={n}");
     }
 }

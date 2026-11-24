@@ -74,13 +74,29 @@ impl Compiler {
     pub(crate) fn compile_index_assignment(&mut self, base: &Expr, index: &Expr, value: &Expr) -> Result<(), CompileError> {
         let is_string = self.is_string_base(base);
 
-        // 数组写：`buf[i] = x` / `buf[3] = x` 一条融合指令打掉，前提是三者都已在寄存器里
+        // 数组写：`buf[i] = x` / `buf[3] = x` 一条融合指令打掉，前提是 base/index 已在寄存器里。
+        // RHS 是复合表达式（`buf[idx] = buf[idx] + i`）时先算进临时寄存器，同样能整条融合；
+        // 变量 RHS 直接用其寄存器。
         if !is_string {
             if let Some(vec_reg) = self.expr_var_reg(base) {
                 let idx_imm = Self::int_lit(index).filter(|v| *v <= u32::MAX as u64);
                 let idx_reg = if idx_imm.is_none() { self.expr_var_reg(index) } else { None };
-                if idx_imm.is_some() || idx_reg.is_some() {
-                    if let Some(src_reg) = self.expr_var_reg(value) {
+                let index_ok = idx_imm.is_some() || idx_reg.is_some();
+                if index_ok {
+                    let src_reg = match self.expr_var_reg(value) {
+                        Some(reg) => Some(reg),
+                        None if self.can_expr_to_reg(value) => {
+                            // 临时槽：算完即还，只为把值送进寄存器
+                            let saved = self.next_local_reg;
+                            self.next_local_reg += 1;
+                            let compiled = self.compile_expr_to_reg(value, saved);
+                            self.next_local_reg = saved;
+                            compiled?;
+                            Some(saved)
+                        }
+                        None => None,
+                    };
+                    if let Some(src_reg) = src_reg {
                         match idx_imm {
                             Some(imm) => self.emit_vec_set_reg_imm(vec_reg, imm as u32, src_reg),
                             None => self.emit_vec_set_reg(vec_reg, idx_reg.unwrap_or(0), src_reg),
