@@ -205,19 +205,32 @@ pub fn handle_vec_pop(state: &mut VmState) -> VmResult<()> {
 /// Stack: [vec_addr, index] -> [value]
 ///
 /// Implements [expr.array.index.array] - bounds checked at runtime
-pub fn handle_vec_get(state: &mut VmState) -> VmResult<()> {
-    let index = state.pop()?;
-    let vec_addr = state.pop()? as usize;
-
-    let length = vec_get_length(state, vec_addr)?;
-    let elem_size = vec_get_elem_size(state, vec_addr)?;
-
-    // Bounds check [expr.array.index.const] at runtime
+/// 越界检查 + 读取元素。栈式 `VEC_GET` 与融合形态共用，保证越界行为逐字一致。
+fn vec_read_checked(state: &mut VmState, vec_addr: u64, index: u64) -> VmResult<u64> {
+    let addr = vec_addr as usize;
+    let length = vec_get_length(state, addr)?;
+    let elem_size = vec_get_elem_size(state, addr)?;
     if index >= length {
         return Err(VmError::HeapOutOfBounds); // Index out of bounds
     }
+    vec_read_element(state, addr, index, elem_size)
+}
 
-    let value = vec_read_element(state, vec_addr, index, elem_size)?;
+/// 越界检查 + 写入元素（同上，栈式与融合共用）。
+fn vec_write_checked(state: &mut VmState, vec_addr: u64, index: u64, value: u64) -> VmResult<()> {
+    let addr = vec_addr as usize;
+    let length = vec_get_length(state, addr)?;
+    let elem_size = vec_get_elem_size(state, addr)?;
+    if index >= length {
+        return Err(VmError::HeapOutOfBounds); // Index out of bounds
+    }
+    vec_write_element(state, addr, index, elem_size, value)
+}
+
+pub fn handle_vec_get(state: &mut VmState) -> VmResult<()> {
+    let index = state.pop()?;
+    let vec_addr = state.pop()?;
+    let value = vec_read_checked(state, vec_addr, index)?;
     state.push(value)
 }
 
@@ -226,17 +239,8 @@ pub fn handle_vec_get(state: &mut VmState) -> VmResult<()> {
 pub fn handle_vec_set(state: &mut VmState) -> VmResult<()> {
     let value = state.pop()?;
     let index = state.pop()?;
-    let vec_addr = state.pop()? as usize;
-
-    let length = vec_get_length(state, vec_addr)?;
-    let elem_size = vec_get_elem_size(state, vec_addr)?;
-
-    // Bounds check
-    if index >= length {
-        return Err(VmError::HeapOutOfBounds); // Index out of bounds
-    }
-
-    vec_write_element(state, vec_addr, index, elem_size, value)
+    let vec_addr = state.pop()?;
+    vec_write_checked(state, vec_addr, index, value)
 }
 
 /// VEC_REPEAT: Create vector with repeated value ([value; count])
@@ -295,6 +299,57 @@ pub fn handle_vec_reserve(state: &mut VmState) -> VmResult<()> {
     // This is a no-op - user should pre-allocate enough capacity.
     // A real implementation would allocate new memory and copy.
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 访存融合：等价于「寄存器压栈 → 栈式指令 → 取回寄存器」，因此栈中性。
+// 越界行为走同一套 vec_read_checked / vec_write_checked，与栈式逐字一致。
+// ---------------------------------------------------------------------------
+
+/// `VEC_GET_REG <dst> <vec> <idx>` ≡ `PUSH_REG vec; PUSH_REG idx; VEC_GET; POP_REG dst`
+pub fn handle_vec_get_reg(state: &mut VmState) -> VmResult<()> {
+    let dst = state.read_u8()?;
+    let vec_reg = state.read_u8()?;
+    let idx_reg = state.read_u8()?;
+
+    let vec_addr = state.get_reg(vec_reg)?;
+    let index = state.get_reg(idx_reg)?;
+    let value = vec_read_checked(state, vec_addr, index)?;
+    state.set_reg(dst, value)
+}
+
+/// `VEC_GET_REG_IMM <dst> <vec> <idx:u32>` ≡ `PUSH_REG vec; PUSH_IMM32 idx; VEC_GET; POP_REG dst`
+pub fn handle_vec_get_reg_imm(state: &mut VmState) -> VmResult<()> {
+    let dst = state.read_u8()?;
+    let vec_reg = state.read_u8()?;
+    let index = state.read_u32()? as u64;
+
+    let vec_addr = state.get_reg(vec_reg)?;
+    let value = vec_read_checked(state, vec_addr, index)?;
+    state.set_reg(dst, value)
+}
+
+/// `VEC_SET_REG <vec> <idx> <src>` ≡ `PUSH_REG vec; PUSH_REG idx; PUSH_REG src; VEC_SET`
+pub fn handle_vec_set_reg(state: &mut VmState) -> VmResult<()> {
+    let vec_reg = state.read_u8()?;
+    let idx_reg = state.read_u8()?;
+    let src_reg = state.read_u8()?;
+
+    let vec_addr = state.get_reg(vec_reg)?;
+    let index = state.get_reg(idx_reg)?;
+    let value = state.get_reg(src_reg)?;
+    vec_write_checked(state, vec_addr, index, value)
+}
+
+/// `VEC_SET_REG_IMM <vec> <idx:u32> <src>` ≡ `PUSH_REG vec; PUSH_IMM32 idx; PUSH_REG src; VEC_SET`
+pub fn handle_vec_set_reg_imm(state: &mut VmState) -> VmResult<()> {
+    let vec_reg = state.read_u8()?;
+    let index = state.read_u32()? as u64;
+    let src_reg = state.read_u8()?;
+
+    let vec_addr = state.get_reg(vec_reg)?;
+    let value = state.get_reg(src_reg)?;
+    vec_write_checked(state, vec_addr, index, value)
 }
 
 #[cfg(test)]

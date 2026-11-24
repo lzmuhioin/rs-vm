@@ -10,24 +10,36 @@ impl Compiler {
     /// Compile if expression
     /// if cond { then_block } else { else_block }
     pub(crate) fn compile_if(&mut self, cond: &Expr, then_block: &Block, else_branch: Option<&Expr>) -> Result<(), CompileError> {
+        // 丢弃语义只作用于「这条语句本身」，子表达式一律需要值：
+        // 取快照后立刻清标记，否则 `result = if a {1} else {2};` 会把 if 当语句编译而丢值
+        let discarding = self.discard_stmt_value;
+        self.discard_stmt_value = false;
+
         let else_label = self.unique_label("if_else");
         let end_label = self.unique_label("if_end");
 
-        // Compile condition
-        self.compile_expr(cond)?;
+        // 条件：能编成融合比较-跳转就用一条指令，否则回退栈序列
+        if !self.emit_falsy_cond_jump(cond, &else_label)? {
+            self.compile_expr(cond)?;
 
-        // Test condition: XOR with 0 sets ZF if value is 0
-        self.emit_dup();
-        self.emit_zero();
-        self.emit_xor();
-        self.emit_drop();  // Drop XOR result, keep original condition
-        self.emit_drop();  // Drop original condition
+            // Test condition: XOR with 0 sets ZF if value is 0
+            self.emit_dup();
+            self.emit_zero();
+            self.emit_xor();
+            self.emit_drop(); // Drop XOR result, keep original condition
+            self.emit_drop(); // Drop original condition
 
-        // Jump to else if condition is false (zero)
-        self.emit_jump(control::JZ, &else_label);
+            // Jump to else if condition is false (zero)
+            self.emit_jump(control::JZ, &else_label);
+        }
 
-        // Then block
-        self.compile_block(then_block)?;
+        // Then block：语句位置不需要值，用语句方式编译（块内每个语句各自丢弃结果，
+        // 末尾不产出 unit），否则分支会留下一个 unit 让调用方去消费
+        if discarding {
+            self.compile_block_stmt(then_block)?;
+        } else {
+            self.compile_block(then_block)?;
+        }
         self.emit_jump(control::JMP, &end_label);
 
         // Else block
@@ -35,7 +47,11 @@ impl Compiler {
         if let Some(else_expr) = else_branch {
             match else_expr {
                 Expr::Block(block) => {
-                    self.compile_block(&block.block)?;
+                    if discarding {
+                        self.compile_block_stmt(&block.block)?;
+                    } else {
+                        self.compile_block(&block.block)?;
+                    }
                 }
                 Expr::If(else_if) => {
                     // else if ...
@@ -46,8 +62,8 @@ impl Compiler {
                     self.compile_expr(else_expr)?;
                 }
             }
-        } else {
-            // No else: push unit (0)
+        } else if !discarding {
+            // No else: push unit (0)（语句位置不需要）
             self.emit_zero();
         }
 
@@ -58,6 +74,9 @@ impl Compiler {
     /// Compile while loop
     /// while cond { body }
     pub(crate) fn compile_while(&mut self, cond: &Expr, body: &Block) -> Result<(), CompileError> {
+        let discarding = self.discard_stmt_value;
+        self.discard_stmt_value = false;
+
         let loop_start = self.unique_label("while_start");
         let loop_end = self.unique_label("while_end");
 
@@ -71,11 +90,9 @@ impl Compiler {
         // Loop start
         self.mark_label(&loop_start);
 
-        // Compile condition. 两边都是寄存器的比较走融合指令：
-        // 原序列 `PUSH;PUSH;CMP/比较;DUP;ZERO;XOR;DROP;DROP;JZ` 约 10 条 → 1 条。
-        if let Some((a, b, falsy)) = self.try_falsy_reg_compare(cond) {
-            self.emit_cmp_reg_reg_jcc(a, b, falsy, &loop_end);
-        } else {
+        // Compile condition. 能编成融合比较-跳转（寄存器/立即数）就一条打掉，
+        // 否则回退：原序列 `PUSH;PUSH;CMP/比较;DUP;ZERO;XOR;DROP;DROP;JZ` 约 10 条。
+        if !self.emit_falsy_cond_jump(cond, &loop_end)? {
             self.compile_expr(cond)?;
             self.emit_dup();
             self.emit_zero();
@@ -99,8 +116,10 @@ impl Compiler {
         // Pop loop context
         self.loop_stack.pop();
 
-        // While loops produce unit
-        self.emit_zero();
+        // While loops produce unit（语句位置不需要）
+        if !discarding {
+            self.emit_zero();
+        }
 
         Ok(())
     }
@@ -108,6 +127,9 @@ impl Compiler {
     /// Compile infinite loop
     /// loop { body }
     pub(crate) fn compile_loop(&mut self, body: &Block) -> Result<(), CompileError> {
+        let discarding = self.discard_stmt_value;
+        self.discard_stmt_value = false;
+
         let loop_start = self.unique_label("loop_start");
         let loop_end = self.unique_label("loop_end");
 
@@ -133,8 +155,10 @@ impl Compiler {
         // Pop loop context
         self.loop_stack.pop();
 
-        // Infinite loops produce unit (unless break with value, not supported)
-        self.emit_zero();
+        // Infinite loops produce unit（语句位置不需要）
+        if !discarding {
+            self.emit_zero();
+        }
 
         Ok(())
     }
@@ -142,6 +166,9 @@ impl Compiler {
     /// Compile for loop
     /// for i in start..end { body }
     pub(crate) fn compile_for_loop(&mut self, for_loop: &syn::ExprForLoop) -> Result<(), CompileError> {
+        let discarding = self.discard_stmt_value;
+        self.discard_stmt_value = false;
+
         // Push a scope for the for loop (loop variable lives here)
         self.push_scope();
 
@@ -217,8 +244,10 @@ impl Compiler {
         // Pop scope (for loop variable cleanup)
         self.pop_scope();
 
-        // For loops produce unit
-        self.emit_zero();
+        // For loops produce unit（语句位置不需要）
+        if !discarding {
+            self.emit_zero();
+        }
 
         Ok(())
     }
@@ -286,8 +315,13 @@ impl Compiler {
                     self.register_struct_from_item(item_struct)?;
                 }
                 syn::Stmt::Expr(expr, _) => {
-                    self.compile_expr(expr)?;
-                    self.emit_drop();  // Always drop expression result
+                    // 语句位置的表达式值一律丢弃：置位后 `if`/`while`/`loop`/块
+                    // 不再产出 unit（省 `PUSH_IMM8 0` + `DROP` 共 3 字节）
+                    let saved_discard = self.discard_stmt_value;
+                    self.discard_stmt_value = true;
+                    let result = self.compile_stmt_expr(expr);
+                    self.discard_stmt_value = saved_discard;
+                    result?;
                 }
                 syn::Stmt::Local(local) => {
                     self.compile_local(local)?;
@@ -313,6 +347,53 @@ impl Compiler {
         Ok(())
     }
 
+
+    /// 语句位置的表达式编译（值会被丢弃，不产出 unit）
+    fn compile_stmt_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
+        match expr {
+                        syn::Expr::Assign(assign) => {
+                            self.compile_assignment(&assign.left, &assign.right)?;
+                        }
+                        syn::Expr::Binary(bin)
+                            if matches!(
+                                bin.op,
+                                syn::BinOp::AddAssign(_)
+                                    | syn::BinOp::SubAssign(_)
+                                    | syn::BinOp::MulAssign(_)
+                                    | syn::BinOp::DivAssign(_)
+                                    | syn::BinOp::RemAssign(_)
+                                    | syn::BinOp::BitXorAssign(_)
+                                    | syn::BinOp::BitAndAssign(_)
+                                    | syn::BinOp::BitOrAssign(_)
+                                    | syn::BinOp::ShlAssign(_)
+                                    | syn::BinOp::ShrAssign(_)
+                            ) =>
+                        {
+                            self.compile_assign_op(&bin.left, &bin.op, &bin.right)?;
+                        }
+                        // 控制流语句：`compile_if`/`compile_while` 等在
+                        // discard_stmt_value 为真时不产出 unit，因此不能再 DROP
+                        syn::Expr::If(if_expr) => {
+                            let else_branch = if_expr.else_branch.as_ref().map(|(_, e)| e.as_ref());
+                            self.compile_if(&if_expr.cond, &if_expr.then_branch, else_branch)?;
+                        }
+                        syn::Expr::While(while_expr) => {
+                            self.compile_while(&while_expr.cond, &while_expr.body)?;
+                        }
+                        syn::Expr::Loop(loop_expr) => {
+                            self.compile_loop(&loop_expr.body)?;
+                        }
+                        syn::Expr::ForLoop(for_expr) => {
+                            self.compile_for_loop(for_expr)?;
+                        }
+                        _ => {
+                            self.compile_expr(expr)?;
+                            self.emit_drop();  // Always drop expression result
+                        }
+        }
+        Ok(())
+    }
+
     /// Compile a block as expression (returns value on stack)
     pub(crate) fn compile_block(&mut self, block: &Block) -> Result<(), CompileError> {
         // Push new scope for this block
@@ -335,15 +416,13 @@ impl Compiler {
                 syn::Stmt::Item(Item::Struct(item_struct)) => {
                     self.register_struct_from_item(item_struct)?;
                 }
-                syn::Stmt::Expr(expr, Some(_)) => {
-                    // Expression with semicolon - drop result
-                    self.compile_expr(expr)?;
-                    self.emit_drop();
-                }
-                syn::Stmt::Expr(expr, None) => {
-                    // Expression without semicolon in middle - drop anyway
-                    self.compile_expr(expr)?;
-                    self.emit_drop();
+                syn::Stmt::Expr(expr, _) => {
+                    // 非末尾语句的值一律丢弃：置位后 if/while/loop/块不再产出 unit
+                    let saved_discard = self.discard_stmt_value;
+                    self.discard_stmt_value = true;
+                    let result = self.compile_stmt_expr(expr);
+                    self.discard_stmt_value = saved_discard;
+                    result?;
                 }
                 syn::Stmt::Local(local) => {
                     self.compile_local(local)?;
@@ -1015,8 +1094,31 @@ impl Compiler {
 impl Compiler {
     /// 条件若是「两个寄存器 + 比较运算符」，返回 (a, b, 条件为假时跳转的 cond 码)。
     /// cond 码：0=eq 1=ne 2=gt 3=lt 4=ge 5=le（与运行时 `CMP_REG_REG_JCC` 一致）。
-    pub(crate) fn try_falsy_reg_compare(&self, cond: &syn::Expr) -> Option<(u8, u8, u8)> {
-        let syn::Expr::Binary(b) = cond else { return None };
+    /// 把「条件为假时跳到 `falsy_label`」编成融合比较-跳转。
+    ///
+    /// 覆盖三种形态，编不了就返回 `false`，调用方回退到
+    /// `compile_expr; DUP; ZERO; XOR; DROP; DROP; JZ` 的栈序列：
+    /// 1. `a OP b`，两侧都是变量 → `CMP_REG_REG_JCC`
+    /// 2. `a OP imm`，右侧是 u32 字面量 → `CMP_REG_IMM_JCC`
+    ///    （左侧是变量直接用；是可编成寄存器的表达式就先算进临时寄存器）
+    /// 3. 裸变量 `if flag` → `CMP_REG_IMM_JCC flag, 0, JZ`
+    pub(crate) fn emit_falsy_cond_jump(
+        &mut self,
+        cond: &syn::Expr,
+        falsy_label: &str,
+    ) -> Result<bool, CompileError> {
+        // 裸变量：`if flag` / `while flag` 等价于 flag == 0
+        if let syn::Expr::Path(_) = cond {
+            let Some(reg) = self.expr_var_reg(cond) else {
+                return Ok(false);
+            };
+            self.emit_cmp_reg_imm_jcc(reg, 0, control::JCC_Z, falsy_label);
+            return Ok(true);
+        }
+
+        let syn::Expr::Binary(b) = cond else {
+            return Ok(false);
+        };
         // 条件为假时要跳出的分支，等价于「取反后的比较」
         let falsy = match b.op {
             syn::BinOp::Eq(_) => control::JCC_NZ,
@@ -1025,10 +1127,37 @@ impl Compiler {
             syn::BinOp::Le(_) => control::JCC_GT,
             syn::BinOp::Gt(_) => control::JCC_LE,
             syn::BinOp::Ge(_) => control::JCC_LT,
-            _ => return None,
+            _ => return Ok(false),
         };
-        let a = self.expr_var_reg(&b.left)?;
-        let bb = self.expr_var_reg(&b.right)?;
-        Some((a, bb, falsy))
+
+        // 形态 1：两侧都是寄存器
+        if let (Some(a), Some(bb)) = (self.expr_var_reg(&b.left), self.expr_var_reg(&b.right)) {
+            self.emit_cmp_reg_reg_jcc(a, bb, falsy, falsy_label);
+            return Ok(true);
+        }
+
+        // 形态 2：右侧是 u32 字面量
+        let Some(imm) = Self::int_lit(&b.right) else {
+            return Ok(false);
+        };
+        if imm > u32::MAX as u64 {
+            return Ok(false);
+        }
+        if let Some(reg) = self.expr_var_reg(&b.left) {
+            self.emit_cmp_reg_imm_jcc(reg, imm as u32, falsy, falsy_label);
+            return Ok(true);
+        }
+        if !self.can_expr_to_reg(&b.left) {
+            return Ok(false);
+        }
+        // 左侧是表达式：先算进临时寄存器，比较完立即释放该临时槽
+        let saved = self.next_local_reg;
+        let tmp = saved;
+        self.next_local_reg = saved.saturating_add(1);
+        let compiled = self.compile_expr_to_reg(&b.left, tmp);
+        self.next_local_reg = saved;
+        compiled?;
+        self.emit_cmp_reg_imm_jcc(tmp, imm as u32, falsy, falsy_label);
+        Ok(true)
     }
 }

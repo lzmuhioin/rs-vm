@@ -1,0 +1,431 @@
+//! S3-real：真实后端上的差分测试。
+//!
+//! 玩具 IR 的差分骨架只证明了「方法可行」。这里换成真实的宏 + 真实运行时：
+//! 每个 `#[vm_protect]` 函数都配一个**语义契约相同的原生孪生体**，用确定性随机语料
+//! 逐值比对。语料刻意覆盖边界：0、1、2 的幂、`u64::MAX`、移位量 63/64/65、
+//! 除零与模零。
+//!
+//! 注意 oracle 不是「Rust 语义」而是「VM 契约语义」：整数回绕、除零/模零得 0、
+//! 移位量按 64 取模。孪生体照这个契约写，否则测的是两套不同的规范。
+
+use aegis_vm_macro::vm_protect;
+
+// ---- 原生孪生体（VM 契约口径）----
+
+fn ndiv(a: u64, b: u64) -> u64 {
+    a.checked_div(b).unwrap_or(0)
+}
+fn nmod(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        0
+    } else {
+        a % b
+    }
+}
+
+// ---- 被测函数（真实宏编译）----
+
+#[vm_protect]
+fn d_sub(a: u64, b: u64) -> u64 {
+    a - b
+}
+
+#[vm_protect]
+fn d_divmod(a: u64, b: u64) -> u64 {
+    let q = a / b;
+    let r = a % b;
+    q ^ r
+}
+
+#[vm_protect]
+fn d_bits(a: u64, b: u64) -> u64 {
+    let x = a & b;
+    let y = a | b;
+    let z = a ^ b;
+    x + y + z
+}
+
+#[vm_protect]
+fn d_shift(a: u64, b: u64) -> u64 {
+    let l = a << b;
+    let r = a >> b;
+    l ^ r
+}
+
+/// 全字面量 RHS：专门压 `*_REG_IMM`
+#[vm_protect]
+fn d_imm(a: u64, b: u64) -> u64 {
+    let mut x = a;
+    x = x & 255;
+    x = x | 7;
+    x = x ^ b;
+    x = x + 5;
+    x = x - 2;
+    x = x / 7;
+    x = x % 13;
+    x = x << 3;
+    x = x >> 1;
+    x
+}
+
+/// 逐条打满 8 条立即数指令：每个算子都配一个**字面量** RHS，
+/// 少一条就说明语料没覆盖到那条 handler（变异自检会暴露）
+#[vm_protect]
+fn d_imm_each(a: u64) -> u64 {
+    let mut x = a;
+    x = x - 3;
+    x = x / 2;
+    x = x % 5;
+    x = x & 0xF0F0;
+    x = x | 0x0F0F;
+    x = x ^ 0x5A5A;
+    x = x << 2;
+    x = x >> 1;
+    x
+}
+
+fn native_d_imm_each(a: u64) -> u64 {
+    let mut x = a;
+    x = x.wrapping_sub(3);
+    x = ndiv(x, 2);
+    x = nmod(x, 5);
+    x &= 0xF0F0;
+    x |= 0x0F0F;
+    x ^= 0x5A5A;
+    x = x.wrapping_shl(2);
+    x = x.wrapping_shr(1);
+    x
+}
+
+/// 分支：覆盖「立即数边界」「左侧表达式 vs 立即数」「零值测试」「变量 vs 变量」
+#[vm_protect]
+fn d_branch(a: u64, b: u64) -> u64 {
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < 50 {
+        if (i & 1) == 0 {
+            s = s + i;
+        } else {
+            s = s - 1;
+        }
+        if s > a {
+            s = s ^ b;
+        }
+        if s == 0 {
+            s = s + 7;
+        }
+        i = i + 1;
+    }
+    s
+}
+
+fn native_d_branch(a: u64, b: u64) -> u64 {
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while (i as i64) < 50 {
+        // 用位与而不是 `% 2 == 0`：后者会触发 clippy::manual_is_multiple_of，
+        // 而改成 `is_multiple_of` 会走原生方法调用路径，测不到我们要测的条件融合
+        if (i & 1) == 0 {
+            s = s.wrapping_add(i);
+        } else {
+            s = s.wrapping_sub(1);
+        }
+        // VM 的比较-跳转是**有符号**语义（update_cmp_flags + JGT 等），孪生体照此写
+        if (s as i64) > (a as i64) {
+            s ^= b;
+        }
+        if s == 0 {
+            s = s.wrapping_add(7);
+        }
+        i += 1;
+    }
+    s
+}
+
+/// 数组读写：`s = s + buf[idx]` 走 VEC_GET_REG，`buf[idx] = s` 走 VEC_SET_REG
+#[vm_protect]
+fn d_array(n: u64) -> u64 {
+    let mut buf = [0u64; 16];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let idx = i & 15;
+        s = s + buf[idx];
+        buf[idx] = s;
+        i = i + 1;
+    }
+    let mut total = 0u64;
+    let mut j = 0u64;
+    while j < 16 {
+        total = total + buf[j];
+        j = j + 1;
+    }
+    total + s
+}
+
+fn native_d_array(n: u64) -> u64 {
+    let mut buf = [0u64; 16];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let idx = (i & 15) as usize;
+        s = s.wrapping_add(buf[idx]);
+        buf[idx] = s;
+        i += 1;
+    }
+    let mut total = 0u64;
+    for v in buf.iter() {
+        total = total.wrapping_add(*v);
+    }
+    total.wrapping_add(s)
+}
+
+/// 写回：RHS 是复合表达式（`buf[k] = buf[k] + i`），值先进临时寄存器再整条 VEC_SET_REG
+#[vm_protect]
+fn d_writeback(n: u64) -> u64 {
+    let mut buf = [0u64; 8];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let k = i & 7;
+        buf[k] = buf[k] + i;
+        s = s + buf[k];
+        i = i + 1;
+    }
+    s
+}
+
+fn native_d_writeback(n: u64) -> u64 {
+    let mut buf = [0u64; 8];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let k = (i & 7) as usize;
+        buf[k] = buf[k].wrapping_add(i);
+        s = s.wrapping_add(buf[k]);
+        i += 1;
+    }
+    s
+}
+
+/// 常量下标：`buf[3]` 走 VEC_GET_REG_IMM / VEC_SET_REG_IMM
+#[vm_protect]
+fn d_array_const(n: u64) -> u64 {
+    let mut buf = [0u64; 8];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        s = s + buf[3];
+        buf[3] = s;
+        i = i + 1;
+    }
+    buf[0] + buf[3]
+}
+
+fn native_d_array_const(n: u64) -> u64 {
+    let mut buf = [0u64; 8];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        s = s.wrapping_add(buf[3]);
+        buf[3] = s;
+        i += 1;
+    }
+    buf[0].wrapping_add(buf[3])
+}
+
+/// 嵌套表达式：右侧是子表达式，走临时寄存器路径
+#[vm_protect]
+fn d_nested(a: u64, b: u64) -> u64 {
+    (a - (b ^ 7)) | (a & b) / (b + 1)
+}
+
+/// 循环 + 混合算子（寄存器与立即数两条路都要走）
+#[vm_protect]
+fn d_loop(a: u64) -> u64 {
+    let mut x = a | 1;
+    let mut i = 0u64;
+    while i < 40 {
+        x = x ^ (x >> 3);
+        x &= 0xFFFF_FFFFu64;
+        x |= i;
+        x = x / 7;
+        x = x + 11;
+        i = i + 1;
+    }
+    x
+}
+
+fn native_d_loop(a: u64) -> u64 {
+    let mut x = a | 1;
+    let mut i = 0u64;
+    while i < 40 {
+        x = x ^ (x >> 3);
+        x &= 0xFFFF_FFFF;
+        x |= i;
+        x = ndiv(x, 7);
+        x = x.wrapping_add(11);
+        i += 1;
+    }
+    x
+}
+
+// ---- 语料 ----
+
+const EDGES: [u64; 14] = [
+    0,
+    1,
+    2,
+    3,
+    7,
+    8,
+    13,
+    63,
+    64,
+    65,
+    255,
+    256,
+    u64::MAX,
+    u64::MAX - 1,
+];
+
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.0 >> 17
+    }
+
+    /// 一半取边界值，一半取全空间随机值
+    fn value(&mut self) -> u64 {
+        if self.next() & 1 == 0 {
+            EDGES[(self.next() % EDGES.len() as u64) as usize]
+        } else {
+            self.next()
+        }
+    }
+}
+
+const CASES: usize = 20_000;
+
+#[test]
+fn sub_matches_contract() {
+    let mut rng = Rng(0x5EED_0001);
+    for _ in 0..CASES {
+        let (a, b) = (rng.value(), rng.value());
+        assert_eq!(d_sub(a, b), a.wrapping_sub(b), "({a}, {b})");
+    }
+}
+
+#[test]
+fn divmod_matches_contract() {
+    let mut rng = Rng(0x5EED_0002);
+    for _ in 0..CASES {
+        let (a, b) = (rng.value(), rng.value());
+        assert_eq!(d_divmod(a, b), ndiv(a, b) ^ nmod(a, b), "({a}, {b})");
+    }
+}
+
+#[test]
+fn bitwise_matches_contract() {
+    let mut rng = Rng(0x5EED_0003);
+    for _ in 0..CASES {
+        let (a, b) = (rng.value(), rng.value());
+        let native = (a & b).wrapping_add(a | b).wrapping_add(a ^ b);
+        assert_eq!(d_bits(a, b), native, "({a}, {b})");
+    }
+}
+
+#[test]
+fn shifts_match_contract() {
+    let mut rng = Rng(0x5EED_0004);
+    for _ in 0..CASES {
+        let (a, b) = (rng.value(), rng.value());
+        let native = a.wrapping_shl(b as u32) ^ a.wrapping_shr(b as u32);
+        assert_eq!(d_shift(a, b), native, "({a}, {b})");
+    }
+}
+
+#[test]
+fn immediate_forms_match_contract() {
+    let mut rng = Rng(0x5EED_0005);
+    for _ in 0..CASES {
+        let (a, b) = (rng.value(), rng.value());
+        let mut x = a;
+        x &= 255;
+        x |= 7;
+        x ^= b;
+        x = x.wrapping_add(5);
+        x = x.wrapping_sub(2);
+        x = ndiv(x, 7);
+        x = nmod(x, 13);
+        x = x.wrapping_shl(3);
+        x = x.wrapping_shr(1);
+        assert_eq!(d_imm(a, b), x, "({a}, {b})");
+    }
+}
+
+#[test]
+fn nested_matches_contract() {
+    let mut rng = Rng(0x5EED_0006);
+    for _ in 0..CASES {
+        let (a, b) = (rng.value(), rng.value());
+        let native = a.wrapping_sub(b ^ 7) | ndiv(a & b, b.wrapping_add(1));
+        assert_eq!(d_nested(a, b), native, "({a}, {b})");
+    }
+}
+
+#[test]
+fn loop_matches_contract() {
+    let mut rng = Rng(0x5EED_0007);
+    for _ in 0..2_000 {
+        let a = rng.value();
+        assert_eq!(d_loop(a), native_d_loop(a), "a={a}");
+    }
+}
+
+#[test]
+fn each_imm_opcode_matches_contract() {
+    let mut rng = Rng(0x5EED_0008);
+    for _ in 0..CASES {
+        let a = rng.value();
+        assert_eq!(d_imm_each(a), native_d_imm_each(a), "a={a}");
+    }
+}
+
+
+#[test]
+fn branch_conditions_match_contract() {
+    let mut rng = Rng(0x5EED_0009);
+    for _ in 0..2_000 {
+        let (a, b) = (rng.value(), rng.value());
+        assert_eq!(d_branch(a, b), native_d_branch(a, b), "({a}, {b})");
+    }
+}
+
+
+#[test]
+fn array_access_matches_contract() {
+    // 迭代数取 2000：融合访存若漏栈，这个规模必炸
+    for n in [0u64, 1, 15, 16, 17, 2000] {
+        assert_eq!(d_array(n), native_d_array(n), "n={n}");
+    }
+}
+
+#[test]
+fn array_const_index_matches_contract() {
+    for n in [0u64, 1, 2000] {
+        assert_eq!(d_array_const(n), native_d_array_const(n), "n={n}");
+    }
+}
+
+#[test]
+fn writeback_matches_contract() {
+    for n in [0u64, 1, 8, 9, 2000] {
+        assert_eq!(d_writeback(n), native_d_writeback(n), "n={n}");
+    }
+}

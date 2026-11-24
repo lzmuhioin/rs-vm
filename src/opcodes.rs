@@ -207,6 +207,78 @@ pub mod control {
     /// Format: CMP_REG_REG_JCC <a:u8> <b:u8> <cond:u8> <offset:i16>
     /// cond: 0=JZ 1=JNZ 2=JGT 3=JLT 4=JGE 5=JLE（满足条件时相对跳转）
     pub const CMP_REG_REG_JCC: u8 = 0xA1;
+
+    /// SUB_REG_REG: `dst = a - b`（等价 PUSH_REG a; PUSH_REG b; SUB; POP_REG dst）
+    /// Format: SUB_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const SUB_REG_REG: u8 = 0xA2;
+
+    /// DIV_REG_REG: `dst = a / b`，除零得 0（与 `handle_div` 的 `checked_div(..).unwrap_or(0)` 一致）
+    /// Format: DIV_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const DIV_REG_REG: u8 = 0xA3;
+
+    /// MOD_REG_REG: `dst = a % b`，除零得 0（与 `handle_mod` 一致）
+    /// Format: MOD_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const MOD_REG_REG: u8 = 0xA4;
+
+    /// AND_REG_REG: `dst = a & b`
+    /// Format: AND_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const AND_REG_REG: u8 = 0xA5;
+
+    /// OR_REG_REG: `dst = a | b`
+    /// Format: OR_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const OR_REG_REG: u8 = 0xA6;
+
+    /// XOR_REG_REG: `dst = a ^ b`
+    /// Format: XOR_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const XOR_REG_REG: u8 = 0xA7;
+
+    /// SHL_REG_REG: `dst = a << b`（wrapping_shl，移位量按 64 取模）
+    /// Format: SHL_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const SHL_REG_REG: u8 = 0xA8;
+
+    /// SHR_REG_REG: `dst = a >> b`（wrapping_shr，移位量按 64 取模）
+    /// Format: SHR_REG_REG <dst:u8> <a:u8> <b:u8>
+    pub const SHR_REG_REG: u8 = 0xA9;
+
+    /// SUB_REG_IMM: `r = r - imm`（等价 PUSH_REG r; PUSH_IMM32 imm; SUB; POP_REG r）
+    /// Format: SUB_REG_IMM <reg:u8> <imm:u32>
+    pub const SUB_REG_IMM: u8 = 0xAA;
+    /// DIV_REG_IMM: `r = r / imm`，imm 为 0 时得 0
+    pub const DIV_REG_IMM: u8 = 0xAB;
+    /// MOD_REG_IMM: `r = r % imm`，imm 为 0 时得 0
+    pub const MOD_REG_IMM: u8 = 0xAC;
+    /// AND_REG_IMM: `r = r & imm`
+    pub const AND_REG_IMM: u8 = 0xAD;
+    /// OR_REG_IMM: `r = r | imm`
+    pub const OR_REG_IMM: u8 = 0xAE;
+    /// XOR_REG_IMM: `r = r ^ imm`
+    pub const XOR_REG_IMM: u8 = 0xAF;
+    /// SHL_REG_IMM: `r = r << imm`（wrapping_shl，移位量按 64 取模）
+    pub const SHL_REG_IMM: u8 = 0xB0;
+    /// SHR_REG_IMM: `r = r >> imm`（wrapping_shr）
+    pub const SHR_REG_IMM: u8 = 0xB1;
+
+    /// VEC_GET_REG: `dst = vec[idx]`，等价 `PUSH_REG vec; PUSH_REG idx; VEC_GET; POP_REG dst`
+    /// Format: VEC_GET_REG <dst:u8> <vec:u8> <idx:u8>
+    pub const VEC_GET_REG: u8 = 0xB3;
+
+    /// VEC_GET_REG_IMM: `dst = vec[imm]`，等价 `PUSH_REG vec; PUSH_IMM32 imm; VEC_GET; POP_REG dst`
+    /// Format: VEC_GET_REG_IMM <dst:u8> <vec:u8> <idx:u32>
+    pub const VEC_GET_REG_IMM: u8 = 0xB4;
+
+    /// VEC_SET_REG: `vec[idx] = src`，等价 `PUSH_REG vec; PUSH_REG idx; PUSH_REG src; VEC_SET`
+    /// Format: VEC_SET_REG <vec:u8> <idx:u8> <src:u8>
+    pub const VEC_SET_REG: u8 = 0xB5;
+
+    /// VEC_SET_REG_IMM: `vec[imm] = src`，等价 `PUSH_REG vec; PUSH_IMM32 imm; PUSH_REG src; VEC_SET`
+    /// Format: VEC_SET_REG_IMM <vec:u8> <idx:u32> <src:u8>
+    pub const VEC_SET_REG_IMM: u8 = 0xB6;
+
+    /// CMP_REG_IMM_JCC: 寄存器与 u32 立即数比较并按条件相对跳转，
+    /// 等价 `PUSH_REG a; PUSH_IMM32 imm; CMP; DROP; DROP; Jcc cond`（栈中性）。
+    /// `imm = 0` 时即零值测试（cond 0/1 → JZ/JNZ），是 `if cond` 的主力形态。
+    /// Format: CMP_REG_IMM_JCC <a:u8> <imm:u32> <cond:u8> <offset:i16>
+    pub const CMP_REG_IMM_JCC: u8 = 0xB2;
 }
 
 /// Special Operations (Anti-analysis)

@@ -215,6 +215,8 @@ pub struct Compiler {
     /// Enable opaque predicates injection
     pub(crate) opaque_predicates_enabled: bool,
     /// Native call collector for external function calls
+    /// 当前是否处于「语句位置」——语句的值会被立刻丢弃，不要产出 unit
+    pub(crate) discard_stmt_value: bool,
     pub(crate) native_collector: NativeCallCollector,
 }
 
@@ -260,6 +262,7 @@ impl Compiler {
             // Opaque predicates enabled for standard+ protection (when substitution is on)
             opaque_predicates_enabled: substitution_enabled,
             native_collector: NativeCallCollector::new(),
+            discard_stmt_value: false,
         }
     }
 
@@ -650,6 +653,139 @@ pub fn compile_function_with_natives(func: &ItemFn, mba_enabled: bool, substitut
     let native_collector = std::mem::take(&mut compiler.native_collector);
 
     Ok((bytecode, native_collector))
+}
+
+#[cfg(test)]
+#[cfg(test)]
+mod reg_binop_tests {
+    use super::*;
+    use quote::quote;
+
+    /// 三个二元算子（减法、按位与、按位或）+ 一个返回值
+    fn compile_sample() -> Vec<u8> {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn sample(a: u64, b: u64) -> u64 {
+                let mut x = 0u64;
+                x = a;
+                x = x - b;
+                x = x & b;
+                x = x | b;
+                x = x ^ b;
+                x = x << b;
+                x = x >> b;
+                x = x / b;
+                x = x % b;
+                x
+            }
+        })
+        .expect("parse sample fn");
+        compile_function_full(&func, false, false).expect("compile sample fn")
+    }
+
+    /// 自赋值 `x = x OP b` 的寄存器式形态是 4 字节（一条 `*_REG_REG`），
+    /// 栈式形态是 7 字节（`PUSH_REG x; PUSH_REG b; OP; POP_REG x`）。
+    /// 字节码在 finalize 时会被置换编码，数 opcode 恒为 0，故只能用总长度做判据。
+    #[test]
+    fn self_assignments_use_reg_binop_instructions() {
+        let code = compile_sample();
+        // 实测：寄存器式 81 字节，关掉 8 个算子退回栈式 109 字节。
+        // 预算取 90：留 9 字节余量，仍能抓出「哪怕两条算子回退到栈路径」。
+        assert!(
+            code.len() <= 90,
+            "8 条自赋值的字节码应 ≤90 字节（寄存器式实测 81，栈式 109），实际 {} 字节",
+            code.len()
+        );
+    }
+
+    /// 赋值语句样本：循环里两句赋值，每句当前白花 `PUSH_IMM8 0` + `DROP`
+    fn compile_assign_stmt_sample() -> Vec<u8> {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn sample(n: u64) -> u64 {
+                let mut s = 0u64;
+                let mut i = 0u64;
+                while i < n {
+                    s = s + i;
+                    i = i + 1;
+                }
+                s
+            }
+        })
+        .expect("parse assign sample fn");
+        compile_function_full(&func, false, false).expect("compile assign sample fn")
+    }
+
+    /// `i = i + 1;` 作为语句时结果被立刻丢弃，不该再发 `emit_zero()` + `DROP`。
+    /// 并且这两个白花指令是「每条赋值 3 字节」，循环里会成倍放大。
+    #[test]
+    fn assignment_statement_does_not_emit_unit_and_drop() {
+        let code = compile_assign_stmt_sample();
+        // 实测：带 unit+drop 是 46 字节；去掉后 40 字节（每条赋值省 3 字节 = PUSH_IMM8 2 + DROP 1）。
+        // 预算 42 能抓出「任意一条赋值回退到 unit+drop」。
+        assert!(
+            code.len() <= 42,
+            "赋值语句不应再发 unit+drop（回退版 46，修复版 40），实际 {} 字节",
+            code.len()
+        );
+    }
+
+    /// 数组读写样本：`s = s + buf[i]`（VEC_GET_REG）+ `buf[i] = s`（VEC_SET_REG）
+    fn compile_array_sample() -> Vec<u8> {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn sample(n: u64) -> u64 {
+                let mut buf = [0u64; 16];
+                let mut s = 0u64;
+                let mut i = 0u64;
+                while i < n {
+                    s = s + buf[i];
+                    buf[i] = s;
+                    i = i + 1;
+                }
+                s
+            }
+        })
+        .expect("parse array sample fn");
+        compile_function_full(&func, false, false).expect("compile array sample fn")
+    }
+
+    /// 融合访存：`buf[i]` 读是 1 条 `VEC_GET_REG`（4 字节），写是 1 条 `VEC_SET_REG`（4 字节）；
+    /// 回退栈序列是「PUSH_REG; PUSH_REG; VEC_GET; POP_REG」= 7 字节（写多一条 PUSH）。
+    /// 同样只能看总长度——字节码 finalize 时已置换编码。
+    #[test]
+    fn array_access_uses_fused_memory_instructions() {
+        let code = compile_array_sample();
+        // 实测：融合 67 字节；把两处融合临时关掉退回栈序列是 73 字节（差 6 = 读少 3 + 写少 3）。
+        // 预算取 70：仍能抓出「任一方向回退」。
+        assert!(
+            code.len() <= 70,
+            "数组读写应走融合访存，实际 {} 字节；若回退到栈序列会明显变长",
+            code.len()
+        );
+    }
+    /// 语句位置的 `if` / `while` / 块 都不需要产出 unit 再丢掉
+    fn len_if_stmt() -> usize {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn s(n: u64) -> u64 { let mut s = 0u64; if n > 3 { s = 1; } s }
+        })
+        .expect("parse");
+        compile_function_full(&func, false, false).expect("compile").len()
+    }
+
+    fn len_while_stmt() -> usize {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn s(n: u64) -> u64 { let mut i = 0u64; while i < n { i = i + 1; } i }
+        })
+        .expect("parse");
+        compile_function_full(&func, false, false).expect("compile").len()
+    }
+
+    #[test]
+    fn control_flow_statements_do_not_emit_discarded_unit() {
+        // 实测：现状 if 43 / while 31；去掉语句位置的 unit（3 字节）后为 40 / 28。
+        assert!(len_if_stmt() <= 40, "if 语句白花 unit+drop，实际 {} 字节（目标 ≤40）", len_if_stmt());
+        assert!(len_while_stmt() <= 28, "while 语句白花 unit+drop，实际 {} 字节（目标 ≤28）", len_while_stmt());
+        // 块语句的 unit 仍由语句层的无条件 DROP 消费，这一轮不动：
+        // 去掉它会让 DROP 弹空（全量用例曾报 E04:E02），需要同时改造语句层的丢弃契约。
+    }
 }
 
 #[cfg(test)]

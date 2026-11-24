@@ -51,6 +51,199 @@ JIT/AOT 需要明文可执行页或原生产物，等于把保护丢掉，不在
 - **S3 安全网**：20 万个随机程序 0 不一致（0.45 s，44 万程序/秒）；注入一条非交换 bug 后
   82% 用例变红，证明骨架能失败。
 
+### 阶段一首批落地（2026-11-24）
+
+新增 8 条寄存器式二元算术（base `0xA2`–`0xA9`）：`SUB` / `DIV` / `MOD` / `AND` / `OR` / `XOR` /
+`SHL` / `SHR` 的 `*_REG_REG` 形态，等价于 `PUSH_REG a; PUSH_REG b; <OP>; POP_REG dst`，
+栈中性、只置 ZF，除零/模零得 0，移位量按 64 取模——与栈式同名 handler 语义逐条对齐。
+
+- 宏侧：`RegOp::from_binop` 覆盖 10 个算子，`can_expr_to_reg` 只在「有立即数形式」时才接受
+  右侧字面量（目前只有 ADD/MUL），其余一律回退栈序列，绝不产生半截字节码；
+- 实测（A/B，同探针同 seed、`taskset -c 6`、两版交替 3 轮）：`bitmix(2000)`
+  **75.7–76.0x → 52.9–54.2x（−29%，1.42x）**；`arith` / `fib` / `sum` 在噪声内不变；
+- 测试：`tests/register_isa.rs`（7 条，含除零/回绕/移位量 64/栈中性/与栈式逐对比对）、
+  `tests/register_isa_macro.rs`（5 条，行为对齐）、宏侧字节码预算（自赋值 8 条 ≤90 字节，
+  实测寄存器式 81 / 栈式 109）；门禁 **876 passed / 0 failed**。
+
+### 阶段一次批：立即数形态（2026-11-24）
+
+同一批 8 个算子补齐 `*_REG_IMM <reg:u8> <imm:u32>`（base `0xAA`–`0xB1`），等价
+`PUSH_REG r; PUSH_IMM32 imm; <OP>; POP_REG r`。宏侧 `RegOp::has_imm_form` 全开，
+右侧字面量不再回退栈序列（仍限 `u32` 范围）。
+
+- 为什么先补它：实测字面量 RHS 比变量 RHS 贵 **1.5 倍**（`bitmix_imm` 79.6–82.0x vs
+  `bitmix` 51.7–53.2x），而真实代码里 `x & 0xFF` / `x >> 8` / `i % 10` 是主流写法；
+- 实测（A/B，两版交替 5 轮）：`bitmix_imm(2000)` **79.6–82.0x → 37.6–39.6x（−52%，2.1x）**；
+- 其余场景落在历史噪声带内（`fib` 本次 402–443x，早前同版本曾出现 397x 的下沿），
+  未观察到真实退化；`arith` / `sum` 基本不变；
+- 测试：`tests/register_isa.rs` 增至 11 条（新增立即数 4 组：回绕、除零/模零、位运算、
+  移位量 64、与栈式逐个比对）；门禁见提交信息。
+
+### S3-real：差分骨架接到真实后端（2026-11-24）
+
+玩具 IR 的差分只证明了方法可行。真实版放在 `tests/fused_differential.rs`：
+每个 `#[vm_protect]` 函数配一个**语义契约相同**的原生孪生体，用确定性随机语料逐值比对。
+
+- 语料：14 个边界值（0/1/2 的幂/63/64/65/255/256/`u64::MAX`）+ 全空间随机，20 000 组/函数；
+- oracle 是 **VM 契约**（整数回绕、除零/模零得 0、移位量按 64 取模），不是 Rust 语义；
+- 覆盖面刻意打满：`d_imm_each` 让 8 条 `*_REG_IMM` 各自都有字面量 RHS，
+  `d_bits` / `d_shift` / `d_loop` 覆盖寄存器形态与循环；
+- **变异自检**：把 `handle_xor_reg_imm` 临时写成 `a & b` → 用例变红（左 5140 / 右 43690），
+  改回即绿。第一版语料没覆盖到这条立即数指令，变异全绿——补 `d_imm_each` 后才抓住，
+  说明「变异自检」不是形式主义，它能发现语料的漏洞。
+
+同时补了构建期校验：`build.rs` 现在也比对 `vendor/aegis_vm_macro/src/opcodes.rs` 的常量
+（原来只校验 `crypto.rs`），三份副本任一错位都在构建时失败。
+
+### 阶段一三批：条件融合（2026-11-24）
+
+先量了指令构成再决定补什么（临时插桩 `dispatch_indirect` 统计 base opcode，测完撤销）：
+纯标量循环 / 数组读写 / 带分支三种负载下，**栈搬运占 41.7% / 62.2% / 50.0%**，算术只占
+8.3% / 21.2% / 21.0%，`if` 条件物化（`DUP; PUSH_IMM8 0; XOR; DROP`）与数组寻址是两个最大头。
+所以三批不补算术，改补条件。
+
+- 新增 `CMP_REG_IMM_JCC <a:u8> <imm:u32> <cond:u8> <offset:i16>`（base `0xB2`），等价
+  `PUSH_REG a; PUSH_IMM32 imm; CMP; DROP; DROP; Jcc cond`；`imm = 0` 即零值测试；
+- 宏侧把「条件为假则跳」统一成 `emit_falsy_cond_jump`：寄存器-寄存器、寄存器-立即数
+  （左侧是可编成寄存器的表达式就先算进临时槽）、裸变量（零值测试）三种形态，
+  编不了才回退栈序列。`if` 与 `while` 都走这条路；
+- 实测（A/B 4 轮交替）：`branchy(1000)`（循环内 `if i % 2 == 0`）
+  **404.7–459.7x → 226.5–232.4x（−45%，1.8x）**；其余场景在噪声内；
+- 测试：`tests/register_isa.rs` 15 条（+4 组：六个条件码、零值测试、栈中性、与栈式逐个比对）、
+  `tests/fused_differential.rs` 9 条（新增 `d_branch`：立即数边界 / 变量-变量 / 零值测试，2 000 组）；
+  门禁 893 passed / 0 failed。
+
+### 顺带发现的既有 bug：`==` / `!=` 漏栈（已修）
+
+测量基线时撞到 `E04`（InvalidRegister，实为 `E03` StackOverflow）。定位后确认**不是 `if` 的问题**：
+
+- `if i & 1 { }`（条件不含比较）不溢栈；`s = s + (0 == i)`（`==` 当值用，连 `if` 都没有）溢栈
+  → 根因在比较表达式本身；
+- 逐个比对六个比较形态：`LT/LE/GT/GE` 都是 `CMP; DROP; DROP`（正确），
+  只有 `EQ/NE` 是 `XOR` 之后**直接压布尔值**，XOR 的结果没丢 → 每次求值净多留 1 个值；
+- `while`/`if` 的回退序列 `DUP; ZERO; XOR; DROP; DROP` 只消费 1 个值，消费掉的是布尔值，
+  多出来的那个值就永久留在栈上 → 每轮泄漏 1 个，约 1000 轮后 E03；
+- 单次求值看不出来，所以 893 条测试没抓到；必须迭代数大到能暴露。
+
+修法：`compile_eq` / `compile_ne` 在 `emit_xor()` 后补 `emit_drop()`（`DROP` 不动标志位，
+XOR 设的 ZF 仍供随后的 JZ/JNZ 使用），与四种大小比较对齐。
+
+回归测试 `tests/comparison_stack_balance.rs`（6 条，迭代 2000）：`==`/`!=` 当值用、
+字面量在左的回退路径、`if` 里用，以及 `LT` 对照。修复前 3 红、修复后 6 绿，门禁 899 passed。
+
+代价：每次 `==` / `!=` 多一条 `DROP` 指令。正确性优先，且比较通常不在最内层热循环里。
+
+### 阶段一四批：访存融合（2026-11-24）
+
+指令构成测量里「数组读写」这一档的栈搬运占到 **62.2%**，`VEC_GET` / `VEC_SET` 前后全是
+`PUSH_REG vec; PUSH_REG idx; ... POP_REG dst`。这批把这两条路径收进单条指令：
+
+| opcode | base | 等价栈序列 |
+|---|---|---|
+| `VEC_GET_REG <dst> <vec> <idx>` | `0xB3` | `PUSH_REG vec; PUSH_REG idx; VEC_GET; POP_REG dst` |
+| `VEC_GET_REG_IMM <dst> <vec> <idx:u32>` | `0xB4` | `PUSH_REG vec; PUSH_IMM32 idx; VEC_GET; POP_REG dst` |
+| `VEC_SET_REG <vec> <idx> <src>` | `0xB5` | `PUSH_REG vec; PUSH_REG idx; PUSH_REG src; VEC_SET` |
+| `VEC_SET_REG_IMM <vec> <idx:u32> <src>` | `0xB6` | `PUSH_REG vec; PUSH_IMM32 idx; PUSH_REG src; VEC_SET` |
+
+四条都**栈中性**；越界行为与栈式逐字一致——把越界检查抽成 `vec_read_checked` /
+`vec_write_checked`，栈式与融合形态共用，杜绝「两份实现慢慢漂移」。
+
+- 宏侧：`can_expr_to_reg` / `compile_expr_to_reg` 支持 `Expr::Index`（`dst = buf[i]`、
+  `dst = buf[3]`），`compile_index_assignment` 在 base/index/value 都已在寄存器时直发 `VEC_SET_*`；
+  字符串下标（`STR_GET`）不动，仍是栈序列；
+- 实测（A/B 3 轮交替）：`arrloop(1000)` **565.4–589.9x → 448.3–463.7x（−20%，1.25x）**；
+  其余场景在噪声内；
+- 测试：`tests/vector_fused.rs` 8 条（取值/存值/立即数下标/越界错误与栈式一致/栈中性）、
+  `tests/fused_differential.rs` 增至 11 条（新增 `d_array` / `d_array_const`，迭代含 2000 轮，
+  顺带验证融合访存不漏栈）、宏侧字节码预算（融合 67 字节 vs 回退 73 字节，预算 ≤70）；
+  门禁 910 passed / 0 failed。
+
+踩到的坑记一条：`VEC_NEW` 只分配容量、**长度是 0**，用 `VEC_SET` 往新向量里写会当场越界。
+第一版测试就是这么写的，结果「越界用例」因为提前失败而假绿——测试自身也要能证伪。
+
+### 阶段一五批：写回 RHS 进临时寄存器（2026-11-24）
+
+`buf[k] = buf[k] + i;` 这类写回，RHS 是复合表达式，`compile_index_assignment` 看到 `value`
+不是变量就整体退回栈序列（`PUSH vec; PUSH idx; <RHS 栈求值>; VEC_SET`）。改成「RHS 若能进寄存器
+就先算进临时槽，再发一条 `VEC_SET_REG`」：
+
+- 实测（4 轮交替）：`writeback(500)` **290.8–297.3x → 258.2–267.0x（−12%，1.13x）**，四轮一致；
+  其余负载（arith / fib / sum / bitmix / branchy / arrloop）在噪声内。门禁 911 passed / 0 failed。
+- dispatch 数从 6 降到 3（`PUSH×4 + ADD + VEC_SET` → `MOV + ADD_REG_REG + VEC_SET_REG`），
+  但字节数**反而多 1**（融合 68 vs 回退 67）——所以这条改动的判据只能是实测，字节长度预算
+  在这里没有分辨力，`tests/` 里只留语义差分（`d_writeback`，含 2000 轮）作为守护。
+
+**被否决的同类尝试（实测更慢，已删除）**：把 `let v = <expr>;` 的初始化也直算进目标寄存器。
+理由看起来和写回一致（省 `PUSH + POP` 两条 dispatch），实测却相反：
+`arith`（4 个顺序 `let`）**264–276x → 320–324x（慢 18%）**、`fib` 476–492x → 537–544x（慢 10%），
+三轮一致。原因推断：`*_REG_IMM` 的编码是 6 字节，而栈序列里 `PUSH_IMM8` 只有 2 字节，
+译码成本随字节走；`let a = x + 3;` 换成 `MOV_REG + ADD_REG_IMM` 是「2 条长指令」对「4 条短指令」，
+dispatch 少了、字节多了，最终更慢。
+
+结论/取舍规则：**融合形态只在「替掉≥2 次压栈 + 1 次弹栈」时用**（数组读写符合），
+在「小立即数 + 单个 let 绑定」这类场景反而要留在栈路径上。
+
+### 阶段一六批：赋值语句不再发 unit + drop（2026-11-24）
+
+重测指令构成时发现每条**赋值语句**白花 2 条指令：`Expr::Assign` 在 `expr.rs` 里发
+`emit_zero()`（`PUSH_IMM8 0`，2 字节）表示「赋值表达式的值」，语句层 `compile_block_stmt` 随后
+`emit_drop()` 把它丢掉——位置就是 `syn::Stmt::Expr` 分支里的 `Always drop expression result`。
+
+语句位置的赋值结果本来就要丢弃，所以直接编赋值本体：`compile_block_stmt` 里对
+`Expr::Assign` 与十种复合赋值（`+=` 等 `syn::BinOp` 变体）改走 `compile_assignment` /
+`compile_assign_op`，不再走 `compile_expr + emit_drop`。尾表达式位置（`Stmt::Expr(expr, None)`）
+不变，仍然产出 unit。
+
+- 单条赋值省 3 字节（`PUSH_IMM8` 2 + `DROP` 1）；`tests` 里用字节预算抓：46 → **40**，预算 ≤42；
+- 指令数（1000 次迭代 × 200 轮）：数组读写 31.2 → **17.1 条/迭代（−45%）**，
+  写回 33.0 → **19.0（−42%）**，Debug 级写回 20.0 → **13.0（−35%）**；
+- 端到端 A/B（4 轮交替）：`bitmix` 48–51x → **24.6–25.8x（−49%，1.96x）**、
+  `sum_local` 80–91k → **47–49k（1.83x）**、`bitmix_imm` 40 → 20.5–22.1（1.9x）、
+  `fib` 472–487 → 286–294（1.65x）、`arrloop` 466–480 → 330–382（1.36x）、
+  `writeback` 258–270 → 190–197（1.35x）、`sum` −26%、`branchy` −15%；
+  直线代码的 `arith` 在噪声内（那里赋值少）。门禁 912 passed / 0 failed。
+
+这一批的收益超过前面五批 ISA 改动之和——因为它命中的是**每条语句的固定开销**，而不是某个指令形态。
+
+### 更正：上一版把 unit 值误判成保护层死代码
+
+本文件曾写过「Debug 级下 `PUSH_IMM8`+`DROP` 占 41%，属保护层死代码，故不再扩 ISA」。**该归因是错的**：
+`DeadCodeInsertion::emit_deterministic` 由 `emit_op` 里的 `self.subst.is_enabled()` 把关，Debug 级
+（`use_substitution = false`）根本不执行；Debug 下看到的那些 `PUSH_IMM8`/`DROP` 就是上面的 unit 值。
+改正后的实测：数组读写 Standard **17.1** / Debug 13.0 条每迭代，写回 Standard 19.0 / Debug 13.0。
+
+同时更正一条当时未经核实的推断：死代码注入率**没有**偏离设计。按 `position` 模拟 10 万个位置，
+注入率 10.0%、最大注入间隔 105，与注释声称的 10% 一致（先前「实测 30–40%」是把 unit 值算进去的错误结论）。
+
+保护层确实存在且不该动的部分：`emit_op` 里 10% 概率的 Junk NOP，以及 Standard 以上的指令代入与死代码注入。
+
+### 阶段一七批：语句位置的 if / while / loop / for 不再产出 unit（2026-11-24）
+
+第六批清掉了赋值语句的 unit 后，剩下的固定开销是**控制流语句**：`compile_if` 在无 else 时
+`emit_zero()`，`compile_while` / `compile_loop` / `compile_for_loop` 结尾 `emit_zero()`，
+然后语句层再 `emit_drop()` 丢掉——同样是每条语句 2 条指令 3 字节。
+
+改法：加 `Compiler::discard_stmt_value`，在 `compile_block_stmt` / `compile_block` 的
+`Stmt::Expr` 分支置位，`compile_stmt_expr` 对 `If`/`While`/`Loop`/`ForLoop` 直接调用对应编译器
+且**不再 DROP**；对应编译器在 `discard_stmt_value` 为真时跳过结尾的 unit。
+
+两条踩过的坑（都是全量用例抓到的，单测看不出来）：
+
+1. **if 分支必须同时改成语句语义**：块仍会产出 unit（`compile_block` 末尾的 zero），
+   语句层不再 DROP 就每执行一次 if 体漏 1 个栈值。`eq_in_loop`（if 体只执行 1 次）看不出来，
+   `ne_in_loop`（执行 1999 次）直接 `E03`；改成 `compile_block_stmt(then_block)` 才对齐。
+2. **标记不能泄漏进子表达式**：`result = if a {1} else {2};` 的 RHS 在语句位置编译，标记为真会让
+   这个 `if` 按语句编译而丢值 → 赋值弹空 `E02`。修法是每个控制流编译器入口把标记**取快照后清零**，
+   只对自身生效（`compile_if` / `compile_while` / `compile_loop` / `compile_for_loop` 各一处）。
+
+- 字节预算：`if` 语句 43 → **40**、`while` 语句 31 → **28**（预算 ≤40 / ≤28）；
+- 端到端 A/B（3 轮交替）：`branchy`（循环+分支）208–221x → **167–174x（−21%，1.26x）**，三轮一致；
+  其余负载在噪声内（`arith` 是直线代码、无控制流，其 4% 摆动属构建间抖动）；
+- 门禁 913 passed / 0 failed。
+
+未做：块语句 `{ s = n; }` 的 unit 仍保留——它的值被语句层的无条件 DROP 消费，要动它得同时改造
+语句层的丢弃契约，风险与收益不成比例，留给后续。
+
 ## 备选方案
 
 - **继续铺超级指令**：已到顶。第五轮回边融合把字节码真实压短了 6 条，A/B 无收益，

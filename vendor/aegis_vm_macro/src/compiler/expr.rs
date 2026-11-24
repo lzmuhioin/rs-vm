@@ -6,6 +6,7 @@
 use syn::{Expr, BinOp, UnOp};
 use super::{Compiler, CompileError, VarLocation};
 use crate::opcodes::control;
+use super::emit::RegOp;
 
 impl Compiler {
     /// Compile any expression (result pushed to stack)
@@ -479,6 +480,9 @@ impl Compiler {
     fn compile_eq(&mut self) -> Result<(), CompileError> {
         // XOR: if equal, result is 0
         self.emit_xor();
+        // XOR 的结果只用于置 ZF，必须丢弃：否则每次求值 `==` 都会在栈上多留一个值，
+        // 循环里跑一千多轮就会 E03/E04（与 LT/LE/GT/GE 的 `CMP; DROP; DROP` 对齐）
+        self.emit_drop();
 
         let else_label = self.unique_label("eq_else");
         let end_label = self.unique_label("eq_end");
@@ -496,6 +500,8 @@ impl Compiler {
     /// Compile inequality: a != b
     fn compile_ne(&mut self) -> Result<(), CompileError> {
         self.emit_xor();
+        // 同上：XOR 结果只用来置 ZF，丢弃后再压布尔值
+        self.emit_drop();
 
         let else_label = self.unique_label("ne_else");
         let end_label = self.unique_label("ne_end");
@@ -1067,7 +1073,7 @@ impl Compiler {
     }
 
     /// 表达式若是整数字面量，返回其值。
-    fn int_lit(expr: &Expr) -> Option<u64> {
+    pub(crate) fn int_lit(expr: &Expr) -> Option<u64> {
         let Expr::Lit(lit) = expr else { return None };
         let syn::Lit::Int(int_lit) = &lit.lit else { return None };
         int_lit.base10_parse::<u64>().ok()
@@ -1086,12 +1092,12 @@ impl Compiler {
             Expr::Path(_) => self.expr_var_reg(expr).is_some(),
             Expr::Lit(_) => Self::int_lit(expr).is_some(),
             Expr::Binary(b) => {
-                if !matches!(b.op, BinOp::Add(_) | BinOp::Mul(_)) {
+                let Some(op) = RegOp::from_binop(&b.op) else {
                     return false;
-                }
-                // 右侧若是立即数，必须能塞进 u32（融合指令的编码限制）。
+                };
+                // 右侧若是立即数：只有 ADD/MUL 有立即数形式，且必须塞进 u32。
                 if let Some(imm) = Self::int_lit(&b.right) {
-                    if imm > u32::MAX as u64 {
+                    if !op.has_imm_form() || imm > u32::MAX as u64 {
                         return false;
                     }
                 } else if self.expr_var_reg(&b.right).is_none() {
@@ -1104,6 +1110,19 @@ impl Compiler {
                     }
                 }
                 self.can_expr_to_reg_inner(&b.left, depth + 1)
+            }
+            // 数组下标：`buf[i]` / `buf[3]` 走融合访存
+            Expr::Index(ix) => {
+                if self.is_string_base(&ix.expr) {
+                    return false; // 字符串走 STR_GET，另行处理
+                }
+                if self.expr_var_reg(&ix.expr).is_none() {
+                    return false;
+                }
+                match Self::int_lit(&ix.index) {
+                    Some(imm) => imm <= u32::MAX as u64,
+                    None => self.expr_var_reg(&ix.index).is_some(),
+                }
             }
             _ => false,
         }
@@ -1128,35 +1147,21 @@ impl Compiler {
                 Ok(())
             }
             Expr::Binary(b) => {
-                let is_add = match b.op {
-                    BinOp::Add(_) => true,
-                    BinOp::Mul(_) => false,
-                    _ => {
-                        return Err(CompileError(
-                            "expr→reg: unsupported binary operator".to_string(),
-                        ))
-                    }
-                };
+                let op = RegOp::from_binop(&b.op).ok_or_else(|| {
+                    CompileError("expr→reg: unsupported binary operator".to_string())
+                })?;
 
                 // 右侧是立即数：dst = dst ⊕ imm
                 if let Some(imm) = Self::int_lit(&b.right) {
                     self.compile_expr_to_reg(&b.left, dst)?;
-                    if is_add {
-                        self.emit_add_reg_imm(dst, imm as u32);
-                    } else {
-                        self.emit_mul_reg_imm(dst, imm as u32);
-                    }
+                    self.emit_reg_binop_imm(op, dst, imm as u32);
                     return Ok(());
                 }
 
                 // 右侧是变量：dst = dst ⊕ right
                 if let Some(rreg) = self.expr_var_reg(&b.right) {
                     self.compile_expr_to_reg(&b.left, dst)?;
-                    if is_add {
-                        self.emit_add_reg_reg(dst, dst, rreg);
-                    } else {
-                        self.emit_mul_reg_reg(dst, dst, rreg);
-                    }
+                    self.emit_reg_binop(op, dst, dst, rreg);
                     return Ok(());
                 }
 
@@ -1167,15 +1172,30 @@ impl Compiler {
                 let result = self
                     .compile_expr_to_reg(&b.right, tmp)
                     .and_then(|()| self.compile_expr_to_reg(&b.left, dst))
-                    .map(|()| {
-                        if is_add {
-                            self.emit_add_reg_reg(dst, dst, tmp);
-                        } else {
-                            self.emit_mul_reg_reg(dst, dst, tmp);
-                        }
-                    });
+                    .map(|()| self.emit_reg_binop(op, dst, dst, tmp));
                 self.next_local_reg = saved;
                 result
+            }
+            // `dst = buf[i]` / `dst = buf[3]`：一条融合访存指令
+            Expr::Index(ix) => {
+                let vec_reg = self
+                    .expr_var_reg(&ix.expr)
+                    .ok_or_else(|| CompileError("expr→reg: array base is not a variable".to_string()))?;
+                match Self::int_lit(&ix.index) {
+                    Some(imm) => {
+                        if imm > u32::MAX as u64 {
+                            return Err(CompileError("expr→reg: index literal too large".to_string()));
+                        }
+                        self.emit_vec_get_reg_imm(dst, vec_reg, imm as u32);
+                    }
+                    None => {
+                        let idx_reg = self
+                            .expr_var_reg(&ix.index)
+                            .ok_or_else(|| CompileError("expr→reg: index is not a variable".to_string()))?;
+                        self.emit_vec_get_reg(dst, vec_reg, idx_reg);
+                    }
+                }
+                Ok(())
             }
             _ => Err(CompileError("expr→reg: unsupported expression".to_string())),
         }

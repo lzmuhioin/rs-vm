@@ -14,6 +14,7 @@ use crate::substitution::{
 impl Compiler {
     /// Emit an opcode (automatically encoded via shuffle table)
     pub(crate) fn emit_op(&mut self, base_opcode: u8) {
+
         // Dead Code Insertion
         if self.subst.is_enabled() {
             let table = self.opcode_table.clone();
@@ -37,6 +38,8 @@ impl Compiler {
 
         let shuffled = self.opcode_table.encode(base_opcode);
         self.bytecode.push(shuffled);
+
+
     }
 
     /// Emit a single byte
@@ -82,6 +85,55 @@ impl Compiler {
     }
 
     /// Emit fused compare-and-branch: `CMP_REG_REG_JCC <a> <b> <cond> <i16 offset>`
+    /// `VEC_GET_REG <dst> <vec> <idx>`（栈中性）
+    pub(crate) fn emit_vec_get_reg(&mut self, dst: u8, vec_reg: u8, idx_reg: u8) {
+        self.emit_op(control::VEC_GET_REG);
+        self.emit(dst);
+        self.emit(vec_reg);
+        self.emit(idx_reg);
+    }
+
+    /// `VEC_GET_REG_IMM <dst> <vec> <idx:u32>`（栈中性）
+    pub(crate) fn emit_vec_get_reg_imm(&mut self, dst: u8, vec_reg: u8, index: u32) {
+        self.emit_op(control::VEC_GET_REG_IMM);
+        self.emit(dst);
+        self.emit(vec_reg);
+        for byte in index.to_le_bytes() {
+            self.emit(byte);
+        }
+    }
+
+    /// `VEC_SET_REG <vec> <idx> <src>`（栈中性）
+    pub(crate) fn emit_vec_set_reg(&mut self, vec_reg: u8, idx_reg: u8, src_reg: u8) {
+        self.emit_op(control::VEC_SET_REG);
+        self.emit(vec_reg);
+        self.emit(idx_reg);
+        self.emit(src_reg);
+    }
+
+    /// `VEC_SET_REG_IMM <vec> <idx:u32> <src>`（栈中性）
+    pub(crate) fn emit_vec_set_reg_imm(&mut self, vec_reg: u8, index: u32, src_reg: u8) {
+        self.emit_op(control::VEC_SET_REG_IMM);
+        self.emit(vec_reg);
+        for byte in index.to_le_bytes() {
+            self.emit(byte);
+        }
+        self.emit(src_reg);
+    }
+
+    /// Emit `CMP_REG_IMM_JCC <a> <imm:u32> <cond> <i16 offset>`
+    pub(crate) fn emit_cmp_reg_imm_jcc(&mut self, a: u8, imm: u32, cond: u8, label: &str) {
+        self.emit_op(control::CMP_REG_IMM_JCC);
+        self.emit(a);
+        for byte in imm.to_le_bytes() {
+            self.emit(byte);
+        }
+        self.emit(cond);
+        let fixup_pos = self.pos();
+        self.emit_u16(0); // Placeholder
+        self.fixups.push((fixup_pos, label.to_string()));
+    }
+
     pub(crate) fn emit_cmp_reg_reg_jcc(&mut self, a: u8, b: u8, cond: u8, label: &str) {
         self.emit_op(control::CMP_REG_REG_JCC);
         self.emit(a);
@@ -535,6 +587,119 @@ impl Compiler {
         self.emit(b);
     }
 
+    /// 8 条寄存器式二元算术统一形状：<op> dst, a, b
+    fn emit_binop_reg_reg(&mut self, opcode: u8, dst: u8, a: u8, b: u8) {
+        self.emit_op(opcode);
+        self.emit(dst);
+        self.emit(a);
+        self.emit(b);
+    }
+
+    /// 寄存器式二元算子的编译期描述：决定可用哪条融合指令、有没有立即数形式
+    /// 立即数形态统一形状：<op> reg, imm:u32
+    fn emit_binop_reg_imm(&mut self, opcode: u8, reg: u8, imm: u32) {
+        self.emit_op(opcode);
+        self.emit(reg);
+        for byte in imm.to_le_bytes() {
+            self.emit(byte);
+        }
+    }
+
+    pub(crate) fn emit_sub_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::SUB_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_div_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::DIV_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_mod_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::MOD_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_and_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::AND_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_or_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::OR_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_xor_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::XOR_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_shl_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::SHL_REG_IMM, reg, imm);
+    }
+
+    pub(crate) fn emit_shr_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_binop_reg_imm(control::SHR_REG_IMM, reg, imm);
+    }
+
+    /// 立即数形态的统一分派
+    pub(crate) fn emit_reg_binop_imm(&mut self, op: RegOp, dst: u8, imm: u32) {
+        match op {
+            RegOp::Add => self.emit_add_reg_imm(dst, imm),
+            RegOp::Mul => self.emit_mul_reg_imm(dst, imm),
+            RegOp::Sub => self.emit_sub_reg_imm(dst, imm),
+            RegOp::Div => self.emit_div_reg_imm(dst, imm),
+            RegOp::Mod => self.emit_mod_reg_imm(dst, imm),
+            RegOp::And => self.emit_and_reg_imm(dst, imm),
+            RegOp::Or => self.emit_or_reg_imm(dst, imm),
+            RegOp::Xor => self.emit_xor_reg_imm(dst, imm),
+            RegOp::Shl => self.emit_shl_reg_imm(dst, imm),
+            RegOp::Shr => self.emit_shr_reg_imm(dst, imm),
+        }
+    }
+
+    pub(crate) fn emit_reg_binop(&mut self, op: RegOp, dst: u8, a: u8, b: u8) {
+        match op {
+            RegOp::Add => self.emit_add_reg_reg(dst, a, b),
+            RegOp::Mul => self.emit_mul_reg_reg(dst, a, b),
+            RegOp::Sub => self.emit_sub_reg_reg(dst, a, b),
+            RegOp::Div => self.emit_div_reg_reg(dst, a, b),
+            RegOp::Mod => self.emit_mod_reg_reg(dst, a, b),
+            RegOp::And => self.emit_and_reg_reg(dst, a, b),
+            RegOp::Or => self.emit_or_reg_reg(dst, a, b),
+            RegOp::Xor => self.emit_xor_reg_reg(dst, a, b),
+            RegOp::Shl => self.emit_shl_reg_reg(dst, a, b),
+            RegOp::Shr => self.emit_shr_reg_reg(dst, a, b),
+        }
+    }
+
+    pub(crate) fn emit_sub_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::SUB_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_div_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::DIV_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_mod_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::MOD_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_and_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::AND_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_or_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::OR_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_xor_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::XOR_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_shl_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::SHL_REG_REG, dst, a, b);
+    }
+
+    pub(crate) fn emit_shr_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_binop_reg_reg(control::SHR_REG_REG, dst, a, b);
+    }
+
     /// MUL_REG_IMM dst, imm:u32
     pub(crate) fn emit_mul_reg_imm(&mut self, dst: u8, imm: u32) {
         self.emit_op(control::MUL_REG_IMM);
@@ -548,5 +713,47 @@ impl Compiler {
         self.emit(dst);
         self.emit(a);
         self.emit(b);
+    }
+}
+
+/// 寄存器式二元算子（阶段一支持的全部算子）。
+///
+/// 与栈式 `arithmetic::*` 一一对应，语义完全一致；只有 `Add`/`Mul` 有立即数融合形式
+/// （`ADD_REG_IMM` / `MUL_REG_IMM`），其余算子只支持寄存器-寄存器形态。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RegOp {
+    Add,
+    Mul,
+    Sub,
+    Div,
+    Mod,
+    And,
+    Or,
+    Xor,
+    Shl,
+    Shr,
+}
+
+impl RegOp {
+    /// `syn` 的二元运算 → 寄存器式算子；不支持的返回 `None`（调用方回退栈序列）
+    pub(crate) fn from_binop(op: &syn::BinOp) -> Option<Self> {
+        Some(match op {
+            syn::BinOp::Add(_) => Self::Add,
+            syn::BinOp::Mul(_) => Self::Mul,
+            syn::BinOp::Sub(_) => Self::Sub,
+            syn::BinOp::Div(_) => Self::Div,
+            syn::BinOp::Rem(_) => Self::Mod,
+            syn::BinOp::BitAnd(_) => Self::And,
+            syn::BinOp::BitOr(_) => Self::Or,
+            syn::BinOp::BitXor(_) => Self::Xor,
+            syn::BinOp::Shl(_) => Self::Shl,
+            syn::BinOp::Shr(_) => Self::Shr,
+            _ => return None,
+        })
+    }
+
+    /// 是否已有 `*_REG_IMM` 形式的融合指令（阶段一补齐后 10 个算子全部具备）
+    pub(crate) fn has_imm_form(self) -> bool {
+        true
     }
 }

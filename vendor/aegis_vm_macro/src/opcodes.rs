@@ -69,6 +69,35 @@ pub mod control {
     pub const MUL_REG_REG: u8 = 0xA0;
     /// CMP_REG_REG_JCC: fused compare-and-branch with condition selector
     pub const CMP_REG_REG_JCC: u8 = 0xA1;
+    /// 寄存器式二元算术（阶段一）：dst = a OP b，栈中性
+    pub const SUB_REG_REG: u8 = 0xA2;
+    pub const DIV_REG_REG: u8 = 0xA3;
+    pub const MOD_REG_REG: u8 = 0xA4;
+    pub const AND_REG_REG: u8 = 0xA5;
+    pub const OR_REG_REG: u8 = 0xA6;
+    pub const XOR_REG_REG: u8 = 0xA7;
+    pub const SHL_REG_REG: u8 = 0xA8;
+    pub const SHR_REG_REG: u8 = 0xA9;
+    /// 立即数形态：r = r OP imm（u32）
+    pub const SUB_REG_IMM: u8 = 0xAA;
+    pub const DIV_REG_IMM: u8 = 0xAB;
+    pub const MOD_REG_IMM: u8 = 0xAC;
+    pub const AND_REG_IMM: u8 = 0xAD;
+    pub const OR_REG_IMM: u8 = 0xAE;
+    pub const XOR_REG_IMM: u8 = 0xAF;
+    pub const SHL_REG_IMM: u8 = 0xB0;
+    pub const SHR_REG_IMM: u8 = 0xB1;
+    /// CMP_REG_IMM_JCC：寄存器 vs 立即数比较 + 条件跳转（栈中性）
+    pub const CMP_REG_IMM_JCC: u8 = 0xB2;
+
+    /// VEC_GET_REG：`dst = vec[idx]`（栈中性）
+    pub const VEC_GET_REG: u8 = 0xB3;
+    /// VEC_GET_REG_IMM：`dst = vec[imm]`（栈中性）
+    pub const VEC_GET_REG_IMM: u8 = 0xB4;
+    /// VEC_SET_REG：`vec[idx] = src`（栈中性）
+    pub const VEC_SET_REG: u8 = 0xB5;
+    /// VEC_SET_REG_IMM：`vec[imm] = src`（栈中性）
+    pub const VEC_SET_REG_IMM: u8 = 0xB6;
     pub const JCC_Z: u8 = 0;
     pub const JCC_NZ: u8 = 1;
     pub const JCC_GT: u8 = 2;
