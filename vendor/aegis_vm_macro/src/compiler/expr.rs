@@ -1111,6 +1111,19 @@ impl Compiler {
                 }
                 self.can_expr_to_reg_inner(&b.left, depth + 1)
             }
+            // 数组下标：`buf[i]` / `buf[3]` 走融合访存
+            Expr::Index(ix) => {
+                if self.is_string_base(&ix.expr) {
+                    return false; // 字符串走 STR_GET，另行处理
+                }
+                if self.expr_var_reg(&ix.expr).is_none() {
+                    return false;
+                }
+                match Self::int_lit(&ix.index) {
+                    Some(imm) => imm <= u32::MAX as u64,
+                    None => self.expr_var_reg(&ix.index).is_some(),
+                }
+            }
             _ => false,
         }
     }
@@ -1162,6 +1175,27 @@ impl Compiler {
                     .map(|()| self.emit_reg_binop(op, dst, dst, tmp));
                 self.next_local_reg = saved;
                 result
+            }
+            // `dst = buf[i]` / `dst = buf[3]`：一条融合访存指令
+            Expr::Index(ix) => {
+                let vec_reg = self
+                    .expr_var_reg(&ix.expr)
+                    .ok_or_else(|| CompileError("expr→reg: array base is not a variable".to_string()))?;
+                match Self::int_lit(&ix.index) {
+                    Some(imm) => {
+                        if imm > u32::MAX as u64 {
+                            return Err(CompileError("expr→reg: index literal too large".to_string()));
+                        }
+                        self.emit_vec_get_reg_imm(dst, vec_reg, imm as u32);
+                    }
+                    None => {
+                        let idx_reg = self
+                            .expr_var_reg(&ix.index)
+                            .ok_or_else(|| CompileError("expr→reg: index is not a variable".to_string()))?;
+                        self.emit_vec_get_reg(dst, vec_reg, idx_reg);
+                    }
+                }
+                Ok(())
             }
             _ => Err(CompileError("expr→reg: unsupported expression".to_string())),
         }

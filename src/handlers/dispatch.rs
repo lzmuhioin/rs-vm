@@ -271,6 +271,22 @@ pub fn w_cmp_reg_imm_jcc(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_cmp_reg_imm_jcc(s)
 }
 
+pub fn w_vec_get_reg(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_vec_get_reg(s)
+}
+
+pub fn w_vec_get_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_vec_get_reg_imm(s)
+}
+
+pub fn w_vec_set_reg(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_vec_set_reg(s)
+}
+
+pub fn w_vec_set_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_vec_set_reg_imm(s)
+}
+
 #[inline(always)]
 pub fn w_mul_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_mul_reg_imm(s)
@@ -619,6 +635,10 @@ pub const HANDLER_TABLE: [Handler; 256] = {
     table[0xB0] = w_shl_reg_imm;
     table[0xB1] = w_shr_reg_imm;
     table[0xB2] = w_cmp_reg_imm_jcc;
+    table[0xB3] = w_vec_get_reg;
+    table[0xB4] = w_vec_get_reg_imm;
+    table[0xB5] = w_vec_set_reg;
+    table[0xB6] = w_vec_set_reg_imm;
 
     // Special (0x40-0x45)
     table[0x40] = w_nop;

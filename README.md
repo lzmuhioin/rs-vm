@@ -10,7 +10,7 @@ RustAegis is a research-grade software protection system that compiles Rust code
 
 ## 🚀 Key Features
 
-*   **Virtualization:** Converts Rust AST directly into a custom stack-based VM instruction set with 120 opcodes (24 are fused superinstructions; the register-style `*_REG_REG` / `*_REG_IMM` forms run a binary op without touching the value stack, and `CMP_REG_IMM_JCC` fuses compare-and-branch against a literal).
+*   **Virtualization:** Converts Rust AST directly into a custom stack-based VM instruction set with 124 opcodes (28 are fused superinstructions; the register-style `*_REG_REG` / `*_REG_IMM` forms run a binary op without touching the value stack, `CMP_REG_IMM_JCC` fuses compare-and-branch against a literal, and `VEC_GET_*` / `VEC_SET_*` fuse array access).
 *   **Native Function Calls:** External functions called inside `#[vm_protect]` are automatically wrapped and executed. No manual setup required.
 *   **Rich Type Support:** Strings, Vectors/Arrays, integers (signed/unsigned), booleans with proper type tracking.
 *   **Heap Memory:** Dynamic memory allocation with automatic cleanup on scope exit.

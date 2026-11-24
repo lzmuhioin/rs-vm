@@ -82,6 +82,42 @@ impl Compiler {
     }
 
     /// Emit fused compare-and-branch: `CMP_REG_REG_JCC <a> <b> <cond> <i16 offset>`
+    /// `VEC_GET_REG <dst> <vec> <idx>`（栈中性）
+    pub(crate) fn emit_vec_get_reg(&mut self, dst: u8, vec_reg: u8, idx_reg: u8) {
+        self.emit_op(control::VEC_GET_REG);
+        self.emit(dst);
+        self.emit(vec_reg);
+        self.emit(idx_reg);
+    }
+
+    /// `VEC_GET_REG_IMM <dst> <vec> <idx:u32>`（栈中性）
+    pub(crate) fn emit_vec_get_reg_imm(&mut self, dst: u8, vec_reg: u8, index: u32) {
+        self.emit_op(control::VEC_GET_REG_IMM);
+        self.emit(dst);
+        self.emit(vec_reg);
+        for byte in index.to_le_bytes() {
+            self.emit(byte);
+        }
+    }
+
+    /// `VEC_SET_REG <vec> <idx> <src>`（栈中性）
+    pub(crate) fn emit_vec_set_reg(&mut self, vec_reg: u8, idx_reg: u8, src_reg: u8) {
+        self.emit_op(control::VEC_SET_REG);
+        self.emit(vec_reg);
+        self.emit(idx_reg);
+        self.emit(src_reg);
+    }
+
+    /// `VEC_SET_REG_IMM <vec> <idx:u32> <src>`（栈中性）
+    pub(crate) fn emit_vec_set_reg_imm(&mut self, vec_reg: u8, index: u32, src_reg: u8) {
+        self.emit_op(control::VEC_SET_REG_IMM);
+        self.emit(vec_reg);
+        for byte in index.to_le_bytes() {
+            self.emit(byte);
+        }
+        self.emit(src_reg);
+    }
+
     /// Emit `CMP_REG_IMM_JCC <a> <imm:u32> <cond> <i16 offset>`
     pub(crate) fn emit_cmp_reg_imm_jcc(&mut self, a: u8, imm: u32, cond: u8, label: &str) {
         self.emit_op(control::CMP_REG_IMM_JCC);

@@ -133,6 +133,34 @@ XOR 设的 ZF 仍供随后的 JZ/JNZ 使用），与四种大小比较对齐。
 
 代价：每次 `==` / `!=` 多一条 `DROP` 指令。正确性优先，且比较通常不在最内层热循环里。
 
+### 阶段一四批：访存融合（2026-11-24）
+
+指令构成测量里「数组读写」这一档的栈搬运占到 **62.2%**，`VEC_GET` / `VEC_SET` 前后全是
+`PUSH_REG vec; PUSH_REG idx; ... POP_REG dst`。这批把这两条路径收进单条指令：
+
+| opcode | base | 等价栈序列 |
+|---|---|---|
+| `VEC_GET_REG <dst> <vec> <idx>` | `0xB3` | `PUSH_REG vec; PUSH_REG idx; VEC_GET; POP_REG dst` |
+| `VEC_GET_REG_IMM <dst> <vec> <idx:u32>` | `0xB4` | `PUSH_REG vec; PUSH_IMM32 idx; VEC_GET; POP_REG dst` |
+| `VEC_SET_REG <vec> <idx> <src>` | `0xB5` | `PUSH_REG vec; PUSH_REG idx; PUSH_REG src; VEC_SET` |
+| `VEC_SET_REG_IMM <vec> <idx:u32> <src>` | `0xB6` | `PUSH_REG vec; PUSH_IMM32 idx; PUSH_REG src; VEC_SET` |
+
+四条都**栈中性**；越界行为与栈式逐字一致——把越界检查抽成 `vec_read_checked` /
+`vec_write_checked`，栈式与融合形态共用，杜绝「两份实现慢慢漂移」。
+
+- 宏侧：`can_expr_to_reg` / `compile_expr_to_reg` 支持 `Expr::Index`（`dst = buf[i]`、
+  `dst = buf[3]`），`compile_index_assignment` 在 base/index/value 都已在寄存器时直发 `VEC_SET_*`；
+  字符串下标（`STR_GET`）不动，仍是栈序列；
+- 实测（A/B 3 轮交替）：`arrloop(1000)` **565.4–589.9x → 448.3–463.7x（−20%，1.25x）**；
+  其余场景在噪声内；
+- 测试：`tests/vector_fused.rs` 8 条（取值/存值/立即数下标/越界错误与栈式一致/栈中性）、
+  `tests/fused_differential.rs` 增至 11 条（新增 `d_array` / `d_array_const`，迭代含 2000 轮，
+  顺带验证融合访存不漏栈）、宏侧字节码预算（融合 67 字节 vs 回退 73 字节，预算 ≤70）；
+  门禁 910 passed / 0 failed。
+
+踩到的坑记一条：`VEC_NEW` 只分配容量、**长度是 0**，用 `VEC_SET` 往新向量里写会当场越界。
+第一版测试就是这么写的，结果「越界用例」因为提前失败而假绿——测试自身也要能证伪。
+
 ## 备选方案
 
 - **继续铺超级指令**：已到顶。第五轮回边融合把字节码真实压短了 6 条，A/B 无收益，

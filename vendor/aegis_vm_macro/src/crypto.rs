@@ -239,6 +239,10 @@ const BASE_OPCODES: &[u8] = &[
     0xB0,
     0xB1,
     0xB2,
+    0xB3,
+    0xB4,
+    0xB5,
+    0xB6,
 ];
 
 /// Opcode encoding table (base -> shuffled)

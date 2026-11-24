@@ -693,6 +693,40 @@ mod reg_binop_tests {
             code.len()
         );
     }
+
+    /// 数组读写样本：`s = s + buf[i]`（VEC_GET_REG）+ `buf[i] = s`（VEC_SET_REG）
+    fn compile_array_sample() -> Vec<u8> {
+        let func: syn::ItemFn = syn::parse2(quote! {
+            fn sample(n: u64) -> u64 {
+                let mut buf = [0u64; 16];
+                let mut s = 0u64;
+                let mut i = 0u64;
+                while i < n {
+                    s = s + buf[i];
+                    buf[i] = s;
+                    i = i + 1;
+                }
+                s
+            }
+        })
+        .expect("parse array sample fn");
+        compile_function_full(&func, false, false).expect("compile array sample fn")
+    }
+
+    /// 融合访存：`buf[i]` 读是 1 条 `VEC_GET_REG`（4 字节），写是 1 条 `VEC_SET_REG`（4 字节）；
+    /// 回退栈序列是「PUSH_REG; PUSH_REG; VEC_GET; POP_REG」= 7 字节（写多一条 PUSH）。
+    /// 同样只能看总长度——字节码 finalize 时已置换编码。
+    #[test]
+    fn array_access_uses_fused_memory_instructions() {
+        let code = compile_array_sample();
+        // 实测：融合 67 字节；把两处融合临时关掉退回栈序列是 73 字节（差 6 = 读少 3 + 写少 3）。
+        // 预算取 70：仍能抓出「任一方向回退」。
+        assert!(
+            code.len() <= 70,
+            "数组读写应走融合访存，实际 {} 字节；若回退到栈序列会明显变长",
+            code.len()
+        );
+    }
 }
 
 #[cfg(test)]

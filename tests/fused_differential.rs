@@ -142,6 +142,70 @@ fn native_d_branch(a: u64, b: u64) -> u64 {
     s
 }
 
+/// 数组读写：`s = s + buf[idx]` 走 VEC_GET_REG，`buf[idx] = s` 走 VEC_SET_REG
+#[vm_protect]
+fn d_array(n: u64) -> u64 {
+    let mut buf = [0u64; 16];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let idx = i & 15;
+        s = s + buf[idx];
+        buf[idx] = s;
+        i = i + 1;
+    }
+    let mut total = 0u64;
+    let mut j = 0u64;
+    while j < 16 {
+        total = total + buf[j];
+        j = j + 1;
+    }
+    total + s
+}
+
+fn native_d_array(n: u64) -> u64 {
+    let mut buf = [0u64; 16];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let idx = (i & 15) as usize;
+        s = s.wrapping_add(buf[idx]);
+        buf[idx] = s;
+        i += 1;
+    }
+    let mut total = 0u64;
+    for v in buf.iter() {
+        total = total.wrapping_add(*v);
+    }
+    total.wrapping_add(s)
+}
+
+/// 常量下标：`buf[3]` 走 VEC_GET_REG_IMM / VEC_SET_REG_IMM
+#[vm_protect]
+fn d_array_const(n: u64) -> u64 {
+    let mut buf = [0u64; 8];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        s = s + buf[3];
+        buf[3] = s;
+        i = i + 1;
+    }
+    buf[0] + buf[3]
+}
+
+fn native_d_array_const(n: u64) -> u64 {
+    let mut buf = [0u64; 8];
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        s = s.wrapping_add(buf[3]);
+        buf[3] = s;
+        i += 1;
+    }
+    buf[0].wrapping_add(buf[3])
+}
+
 /// 嵌套表达式：右侧是子表达式，走临时寄存器路径
 #[vm_protect]
 fn d_nested(a: u64, b: u64) -> u64 {
@@ -312,5 +376,21 @@ fn branch_conditions_match_contract() {
     for _ in 0..2_000 {
         let (a, b) = (rng.value(), rng.value());
         assert_eq!(d_branch(a, b), native_d_branch(a, b), "({a}, {b})");
+    }
+}
+
+
+#[test]
+fn array_access_matches_contract() {
+    // 迭代数取 2000：融合访存若漏栈，这个规模必炸
+    for n in [0u64, 1, 15, 16, 17, 2000] {
+        assert_eq!(d_array(n), native_d_array(n), "n={n}");
+    }
+}
+
+#[test]
+fn array_const_index_matches_contract() {
+    for n in [0u64, 1, 2000] {
+        assert_eq!(d_array_const(n), native_d_array_const(n), "n={n}");
     }
 }

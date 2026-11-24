@@ -258,6 +258,22 @@ pub mod control {
     /// SHR_REG_IMM: `r = r >> imm`（wrapping_shr）
     pub const SHR_REG_IMM: u8 = 0xB1;
 
+    /// VEC_GET_REG: `dst = vec[idx]`，等价 `PUSH_REG vec; PUSH_REG idx; VEC_GET; POP_REG dst`
+    /// Format: VEC_GET_REG <dst:u8> <vec:u8> <idx:u8>
+    pub const VEC_GET_REG: u8 = 0xB3;
+
+    /// VEC_GET_REG_IMM: `dst = vec[imm]`，等价 `PUSH_REG vec; PUSH_IMM32 imm; VEC_GET; POP_REG dst`
+    /// Format: VEC_GET_REG_IMM <dst:u8> <vec:u8> <idx:u32>
+    pub const VEC_GET_REG_IMM: u8 = 0xB4;
+
+    /// VEC_SET_REG: `vec[idx] = src`，等价 `PUSH_REG vec; PUSH_REG idx; PUSH_REG src; VEC_SET`
+    /// Format: VEC_SET_REG <vec:u8> <idx:u8> <src:u8>
+    pub const VEC_SET_REG: u8 = 0xB5;
+
+    /// VEC_SET_REG_IMM: `vec[imm] = src`，等价 `PUSH_REG vec; PUSH_IMM32 imm; PUSH_REG src; VEC_SET`
+    /// Format: VEC_SET_REG_IMM <vec:u8> <idx:u32> <src:u8>
+    pub const VEC_SET_REG_IMM: u8 = 0xB6;
+
     /// CMP_REG_IMM_JCC: 寄存器与 u32 立即数比较并按条件相对跳转，
     /// 等价 `PUSH_REG a; PUSH_IMM32 imm; CMP; DROP; DROP; Jcc cond`（栈中性）。
     /// `imm = 0` 时即零值测试（cond 0/1 → JZ/JNZ），是 `if cond` 的主力形态。

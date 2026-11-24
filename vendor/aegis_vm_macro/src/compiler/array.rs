@@ -74,6 +74,23 @@ impl Compiler {
     pub(crate) fn compile_index_assignment(&mut self, base: &Expr, index: &Expr, value: &Expr) -> Result<(), CompileError> {
         let is_string = self.is_string_base(base);
 
+        // 数组写：`buf[i] = x` / `buf[3] = x` 一条融合指令打掉，前提是三者都已在寄存器里
+        if !is_string {
+            if let Some(vec_reg) = self.expr_var_reg(base) {
+                let idx_imm = Self::int_lit(index).filter(|v| *v <= u32::MAX as u64);
+                let idx_reg = if idx_imm.is_none() { self.expr_var_reg(index) } else { None };
+                if idx_imm.is_some() || idx_reg.is_some() {
+                    if let Some(src_reg) = self.expr_var_reg(value) {
+                        match idx_imm {
+                            Some(imm) => self.emit_vec_set_reg_imm(vec_reg, imm as u32, src_reg),
+                            None => self.emit_vec_set_reg(vec_reg, idx_reg.unwrap_or(0), src_reg),
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         // Stack order for VEC_SET/STR_SET: [addr, index, value] -> []
         self.compile_expr(base)?;           // [addr]
         self.compile_expr(index)?;          // [addr, index]
