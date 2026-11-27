@@ -276,10 +276,17 @@ impl Compiler {
                 let name = path.path.segments[0].ident.to_string();
                 match self.get_var_location(&name) {
                     Some(VarLocation::Register(reg)) => {
-                        // 超级指令路径：`x = a + b` / `x = x * k` 直接落到寄存器，
-                        // 省掉 PUSH;PUSH;OP;POP 三条 dispatch。不适用则回退栈路径。
-                        if self.can_expr_to_reg(value) {
-                            self.compile_expr_to_reg(value, reg)?;
+                        // `x = a op b` 直接落到目标寄存器。
+                        //
+                        // 原来只认 `can_expr_to_reg`（右操作数必须是常量或变量），
+                        // `x = x ^ a` 因此掉进 `compile_expr`：那里为了满足「栈上留一个值」
+                        // 的契约，会在寄存器算完之后再 PUSH 一次，外面再 POP 回变量——
+                        // 实测每次赋值白扔 2 条指令（PUSH_REG + POP_REG）。
+                        // 改用 try_expr_to_reg 的全或无语义：能全程寄存器就一步到位，
+                        // 不能就整体回滚走老路径，不会留下半成品。
+                        if self.reg_fastpath_supported(value) && self.try_expr_to_reg(value, reg).is_some()
+                        {
+                            // 已完成
                         } else {
                             self.compile_expr(value)?;
                             self.emit_pop_reg(reg);
