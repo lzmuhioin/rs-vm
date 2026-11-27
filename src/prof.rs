@@ -39,6 +39,11 @@ pub fn dump() {
     }
 }
 
+/// 已统计的指令总数（= 直方图各项之和）。
+pub fn total() -> u64 {
+    HIST.with(|h| h.borrow().iter().sum())
+}
+
 /// 统计「栈搬运类指令」的占比，返回 (搬运条数, 总条数)。
 ///
 /// 搬运类 = PUSH_IMM(0x01) / PUSH_IMM8(0x02) / PUSH_REG(0x03) /

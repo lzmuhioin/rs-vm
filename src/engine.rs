@@ -82,6 +82,11 @@ pub fn run_with_natives(state: &mut VmState, registry: &NativeRegistry) -> VmRes
 
         // Fetch opcode
         let opcode = state.read_u8()?;
+        // 动态剖析：两条执行循环都必须计数，否则走 run_with_natives 的负载
+        // 会静默统计成 0，测出来的「指令数」根本不是真实执行条数。
+        #[cfg(feature = "prof")]
+        crate::prof::tally(crate::build_config::OPCODE_DECODE[opcode as usize]);
+
 
         // Indirect dispatch via function pointer table
         // This replaces the switch-case pattern for better obfuscation
