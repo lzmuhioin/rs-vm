@@ -22,6 +22,22 @@ impl Compiler {
             // Borrowed values don't need cleanup since the original owns the memory
             let is_borrowed = self.is_borrowed_tuple_extraction(&init.expr);
 
+            // M4：初始化式若能「全或无」地算进寄存器，就先算进临时寄存器，
+            // 再一条 MOV 落到变量寄存器（栈搬运 2 → 0）。
+            if !is_borrowed && self.reg_fastpath_supported(&init.expr) {
+                let pool = std::rc::Rc::clone(&self.scratch);
+                if let Some(guard) = crate::compiler::regs::RegGuard::acquire(&pool) {
+                    let tmp = guard.reg();
+                    if self.try_expr_to_reg(&init.expr, tmp).is_some() {
+                        let reg = self.define_var(&name, var_type, is_signed)?;
+                        self.emit_mov_reg(reg, tmp);
+                        drop(guard);
+                        return Ok(());
+                    }
+                    drop(guard);
+                }
+            }
+
             // Define variable in current scope (allocates register)
             let reg = if is_borrowed {
                 self.define_var_borrowed(&name, var_type, is_signed)?

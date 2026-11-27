@@ -32,6 +32,12 @@ pub(crate) fn stack_moves_emitted() -> u64 {
 pub(crate) fn stack_moves_split() -> (u64, u64) {
     (STACK_PUSHES.with(|c| c.get()), STACK_POPS.with(|c| c.get()))
 }
+/// 把栈搬运计数恢复到快照值：`try_expr_to_reg` 回滚时用（字节码截断了，计数也必须退）。
+pub(crate) fn restore_stack_moves(snapshot: (u64, u64)) {
+    STACK_PUSHES.with(|c| c.set(snapshot.0));
+    STACK_POPS.with(|c| c.set(snapshot.1));
+}
+
 
 impl Compiler {
     /// Emit an opcode (automatically encoded via shuffle table)

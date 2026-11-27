@@ -118,61 +118,6 @@ impl Compiler {
                 {
                     // 递归形态也走寄存器：compile_expr_to_reg 自己会用临时寄存器
                     // 处理子表达式，避免中间结果经栈中转。
-                    fn supported(e: &Expr) -> bool {
-                        match e {
-                            Expr::Path(_) => true,
-                            // 立即数形态只编到 32 位：`compile_expr_to_reg` 里是
-                            // `emit_add_reg_imm(dst, imm as u32)`，超过 u32 的常量会被截断。
-                            // tests/polymorphic.rs 的 `x + 0x123456789ABCDEF0` 正是这么算错的。
-                            Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }) => lit
-                                .base10_parse::<u64>()
-                                .map(|v| v <= u32::MAX as u64)
-                                .unwrap_or(false),
-                            // 必须递归判断：`(x ^ y) + (x & y)` 顶层是 Add，
-                            // 但子节点 ^ 和 & 是 compile_expr_to_reg 不支持的，
-                            // 只看顶层运算符会把这种表达式放进快路径然后编译失败。
-                            Expr::Binary(b) => match b.op {
-                                BinOp::Add(_) | BinOp::Mul(_) => {
-                                    supported(&b.left) && supported(&b.right)
-                                }
-                                // 异或：右值是变量（寄存器形态）或 u32 以内的常量
-                                BinOp::BitXor(_) => {
-                                    supported(&b.left)
-                                        && (matches!(&*b.right, Expr::Path(_))
-                                            || matches!(
-                                                &*b.right,
-                                                Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. })
-                                                    if lit.base10_parse::<u64>().map(|v| v <= u32::MAX as u64).unwrap_or(false)
-                                            ))
-                                }
-                                // 与：右值是变量或 u32 以内的常量
-                                BinOp::BitAnd(_) => {
-                                    supported(&b.left)
-                                        && (matches!(&*b.right, Expr::Path(_))
-                                            || matches!(
-                                                &*b.right,
-                                                Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. })
-                                                    if lit.base10_parse::<u64>().map(|v| v <= u32::MAX as u64).unwrap_or(false)
-                                            ))
-                                }
-                                // 右移只有立即数形态
-                                BinOp::Shr(_) => {
-                                    supported(&b.left)
-                                        && matches!(
-                                            &*b.right,
-                                            Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. })
-                                                if lit.base10_parse::<u64>().map(|v| v <= 63).unwrap_or(false)
-                                        )
-                                }
-                                _ => false,
-                            },
-                            // `(a + b) * (c + d)` 的子表达式在 syn 里是 Expr::Paren，
-                            // 不穿透括号就会把最常见的嵌套写法挡在快路径之外。
-                            Expr::Paren(p) => supported(&p.expr),
-                            Expr::Group(g) => supported(&g.expr),
-                            _ => false,
-                        }
-                    }
                     let sl = supported(&binary.left);
                     let sr = supported(&binary.right);
                     if std::env::var_os("AEGIS_REGDBG").is_some() {
@@ -1185,6 +1130,30 @@ impl Compiler {
     }
 
     /// 是否可以安全地「无副作用地」编译进寄存器（纯判断，不发射任何字节）。
+    /// 快路径判据（与 `compile_expr` 用同一个 `supported`）。
+    /// 语句层必须先过这一关：`compile_expr_to_reg` 遇到大常量会按 32 位截断却不报错，
+    /// 实测让 `value_cryptor::test_many_constants_stress` 算出错值。
+    pub(crate) fn reg_fastpath_supported(&self, expr: &Expr) -> bool {
+        supported(expr)
+    }
+
+    /// 「全或无」的表达式→寄存器编译：成功时不产生任何栈操作，失败时字节码与计数全部回滚。
+    /// 只保证「栈操作没发生」，语义合法性由 `reg_fastpath_supported` 先筛。
+    pub(crate) fn try_expr_to_reg(&mut self, expr: &Expr, dst: u8) -> Option<()> {
+        let mark = self.bytecode.len();
+        let snapshot = crate::compiler::emit::stack_moves_split();
+        let saved_disabled = self.reg_fastpath_disabled;
+        let result = self.compile_expr_to_reg(expr, dst);
+        let after = crate::compiler::emit::stack_moves_split();
+        if result.is_err() || after != snapshot {
+            self.bytecode.truncate(mark);
+            crate::compiler::emit::restore_stack_moves(snapshot);
+            self.reg_fastpath_disabled = saved_disabled;
+            return None;
+        }
+        Some(())
+    }
+
     pub(crate) fn can_expr_to_reg(&self, expr: &Expr) -> bool {
         self.can_expr_to_reg_inner(expr, 0)
     }
@@ -1325,5 +1294,61 @@ impl Compiler {
             }
             _ => Err(CompileError("expr→reg: unsupported expression".to_string())),
         }
+    }
+}
+
+fn supported(e: &Expr) -> bool {
+    match e {
+        Expr::Path(_) => true,
+        // 立即数形态只编到 32 位：`compile_expr_to_reg` 里是
+        // `emit_add_reg_imm(dst, imm as u32)`，超过 u32 的常量会被截断。
+        // tests/polymorphic.rs 的 `x + 0x123456789ABCDEF0` 正是这么算错的。
+        Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }) => lit
+            .base10_parse::<u64>()
+            .map(|v| v <= u32::MAX as u64)
+            .unwrap_or(false),
+        // 必须递归判断：`(x ^ y) + (x & y)` 顶层是 Add，
+        // 但子节点 ^ 和 & 是 compile_expr_to_reg 不支持的，
+        // 只看顶层运算符会把这种表达式放进快路径然后编译失败。
+        Expr::Binary(b) => match b.op {
+            BinOp::Add(_) | BinOp::Mul(_) => {
+                supported(&b.left) && supported(&b.right)
+            }
+            // 异或：右值是变量（寄存器形态）或 u32 以内的常量
+            BinOp::BitXor(_) => {
+                supported(&b.left)
+                    && (matches!(&*b.right, Expr::Path(_))
+                        || matches!(
+                            &*b.right,
+                            Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. })
+                                if lit.base10_parse::<u64>().map(|v| v <= u32::MAX as u64).unwrap_or(false)
+                        ))
+            }
+            // 与：右值是变量或 u32 以内的常量
+            BinOp::BitAnd(_) => {
+                supported(&b.left)
+                    && (matches!(&*b.right, Expr::Path(_))
+                        || matches!(
+                            &*b.right,
+                            Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. })
+                                if lit.base10_parse::<u64>().map(|v| v <= u32::MAX as u64).unwrap_or(false)
+                        ))
+            }
+            // 右移只有立即数形态
+            BinOp::Shr(_) => {
+                supported(&b.left)
+                    && matches!(
+                        &*b.right,
+                        Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. })
+                            if lit.base10_parse::<u64>().map(|v| v <= 63).unwrap_or(false)
+                    )
+            }
+            _ => false,
+        },
+        // `(a + b) * (c + d)` 的子表达式在 syn 里是 Expr::Paren，
+        // 不穿透括号就会把最常见的嵌套写法挡在快路径之外。
+        Expr::Paren(p) => supported(&p.expr),
+        Expr::Group(g) => supported(&g.expr),
+        _ => false,
     }
 }
