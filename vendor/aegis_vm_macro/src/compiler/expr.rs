@@ -106,7 +106,12 @@ impl Compiler {
                 // 寄存器快路径：两侧都是简单操作数（变量或整数常量）且运算符受支持时，
                 // 求值全程走寄存器，只把结果压栈一次交给调用方。
                 // 这样 `x + y` 不再把两个操作数各压一次栈。
-                if matches!(binary.op, BinOp::Add(_) | BinOp::Mul(_)) {
+                if !self.reg_fastpath_disabled
+                    && matches!(
+                        binary.op,
+                        BinOp::Add(_) | BinOp::Mul(_) | BinOp::BitXor(_) | BinOp::Shr(_)
+                    )
+                {
                     // 递归形态也走寄存器：compile_expr_to_reg 自己会用临时寄存器
                     // 处理子表达式，避免中间结果经栈中转。
                     fn supported(e: &Expr) -> bool {
@@ -122,11 +127,25 @@ impl Compiler {
                             // 必须递归判断：`(x ^ y) + (x & y)` 顶层是 Add，
                             // 但子节点 ^ 和 & 是 compile_expr_to_reg 不支持的，
                             // 只看顶层运算符会把这种表达式放进快路径然后编译失败。
-                            Expr::Binary(b) => {
-                                matches!(b.op, BinOp::Add(_) | BinOp::Mul(_))
-                                    && supported(&b.left)
-                                    && supported(&b.right)
-                            }
+                            Expr::Binary(b) => match b.op {
+                                BinOp::Add(_) | BinOp::Mul(_) => {
+                                    supported(&b.left) && supported(&b.right)
+                                }
+                                // 异或只有寄存器-寄存器形态
+                                BinOp::BitXor(_) => {
+                                    supported(&b.left) && matches!(&*b.right, Expr::Path(_))
+                                }
+                                // 右移只有立即数形态
+                                BinOp::Shr(_) => {
+                                    supported(&b.left)
+                                        && matches!(
+                                            &*b.right,
+                                            Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. })
+                                                if lit.base10_parse::<u64>().map(|v| v <= 63).unwrap_or(false)
+                                        )
+                                }
+                                _ => false,
+                            },
                             // `(a + b) * (c + d)` 的子表达式在 syn 里是 Expr::Paren，
                             // 不穿透括号就会把最常见的嵌套写法挡在快路径之外。
                             Expr::Paren(p) => supported(&p.expr),
@@ -1185,7 +1204,7 @@ impl Compiler {
             Expr::Binary(b) => {
                 let is_add = match b.op {
                     BinOp::Add(_) => true,
-                    BinOp::Mul(_) => false,
+                    BinOp::Mul(_) | BinOp::BitXor(_) | BinOp::Shr(_) => false,
                     _ => {
                         return Err(CompileError(
                             "expr→reg: unsupported binary operator".to_string(),
@@ -1196,10 +1215,19 @@ impl Compiler {
                 // 右侧是立即数：dst = dst ⊕ imm
                 if let Some(imm) = Self::int_lit(&b.right) {
                     self.compile_expr_to_reg(&b.left, dst)?;
-                    if is_add {
-                        self.emit_add_reg_imm(dst, imm as u32);
-                    } else {
-                        self.emit_mul_reg_imm(dst, imm as u32);
+                    match b.op {
+                        BinOp::Add(_) => self.emit_add_reg_imm(dst, imm as u32),
+                        BinOp::Mul(_) => self.emit_mul_reg_imm(dst, imm as u32),
+                        BinOp::Shr(_) => self.emit_shr_reg_imm(dst, imm as u32),
+                        // 没有对应的寄存器形态：退回栈式求值再取结果，
+                        // 任何调用方都不该因为运算符不在白名单里就编译失败。
+                        _ => {
+                            self.reg_fastpath_disabled = true;
+                            let r = self.compile_expr(expr);
+                            self.reg_fastpath_disabled = false;
+                            r?;
+                            self.emit_pop_reg(dst);
+                        }
                     }
                     return Ok(());
                 }
@@ -1207,10 +1235,17 @@ impl Compiler {
                 // 右侧是变量：dst = dst ⊕ right
                 if let Some(rreg) = self.expr_var_reg(&b.right) {
                     self.compile_expr_to_reg(&b.left, dst)?;
-                    if is_add {
-                        self.emit_add_reg_reg(dst, dst, rreg);
-                    } else {
-                        self.emit_mul_reg_reg(dst, dst, rreg);
+                    match b.op {
+                        BinOp::Add(_) => self.emit_add_reg_reg(dst, dst, rreg),
+                        BinOp::Mul(_) => self.emit_mul_reg_reg(dst, dst, rreg),
+                        BinOp::BitXor(_) => self.emit_xor_reg_reg(dst, dst, rreg),
+                        _ => {
+                            self.reg_fastpath_disabled = true;
+                            let r = self.compile_expr(expr);
+                            self.reg_fastpath_disabled = false;
+                            r?;
+                            self.emit_pop_reg(dst);
+                        }
                     }
                     return Ok(());
                 }
