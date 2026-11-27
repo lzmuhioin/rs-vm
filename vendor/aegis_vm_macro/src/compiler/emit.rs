@@ -345,13 +345,23 @@ impl Compiler {
     }
 
     /// Emit PUSH_REG instruction
+    #[track_caller]
     pub(crate) fn emit_push_reg(&mut self, reg: u8) {
+        // 栈搬运归因：AEGIS_STK=1 时打印调用点，供统计「谁在搬栈」。
+        if std::env::var_os("AEGIS_STK").is_some() {
+            eprintln!("STK PUSH {} {:?}", reg, std::panic::Location::caller());
+        }
         self.emit_op(stack::PUSH_REG);
         self.emit(reg);
     }
 
     /// Emit POP_REG instruction
+    #[track_caller]
     pub(crate) fn emit_pop_reg(&mut self, reg: u8) {
+        // 同上：AEGIS_STK=1 时打印调用点。
+        if std::env::var_os("AEGIS_STK").is_some() {
+            eprintln!("STK POP {} {:?}", reg, std::panic::Location::caller());
+        }
         self.emit_op(stack::POP_REG);
         self.emit(reg);
     }
