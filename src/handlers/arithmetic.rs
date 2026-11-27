@@ -197,6 +197,16 @@ pub fn handle_xor_reg_reg(state: &mut VmState) -> VmResult<()> {
     Ok(())
 }
 
+/// XOR_REG_IMM: `r = r ^ imm` (fused, ZF only).
+pub fn handle_xor_reg_imm(state: &mut VmState) -> VmResult<()> {
+    let idx = state.read_u8()?;
+    let imm = state.read_u32()? as u64;
+    let result = state.get_reg(idx)? ^ imm;
+    state.set_reg(idx, result)?;
+    state.set_zero_flag(result);
+    Ok(())
+}
+
 /// SHR_REG_IMM: `r = r >> imm` (fused, ZF only).
 pub fn handle_shr_reg_imm(state: &mut VmState) -> VmResult<()> {
     let idx = state.read_u8()?;

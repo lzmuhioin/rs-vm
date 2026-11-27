@@ -131,9 +131,15 @@ impl Compiler {
                                 BinOp::Add(_) | BinOp::Mul(_) => {
                                     supported(&b.left) && supported(&b.right)
                                 }
-                                // 异或只有寄存器-寄存器形态
+                                // 异或：右值是变量（寄存器形态）或 u32 以内的常量
                                 BinOp::BitXor(_) => {
-                                    supported(&b.left) && matches!(&*b.right, Expr::Path(_))
+                                    supported(&b.left)
+                                        && (matches!(&*b.right, Expr::Path(_))
+                                            || matches!(
+                                                &*b.right,
+                                                Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. })
+                                                    if lit.base10_parse::<u64>().map(|v| v <= u32::MAX as u64).unwrap_or(false)
+                                            ))
                                 }
                                 // 右移只有立即数形态
                                 BinOp::Shr(_) => {
@@ -1219,6 +1225,7 @@ impl Compiler {
                         BinOp::Add(_) => self.emit_add_reg_imm(dst, imm as u32),
                         BinOp::Mul(_) => self.emit_mul_reg_imm(dst, imm as u32),
                         BinOp::Shr(_) => self.emit_shr_reg_imm(dst, imm as u32),
+                        BinOp::BitXor(_) => self.emit_xor_reg_imm(dst, imm as u32),
                         // 没有对应的寄存器形态：退回栈式求值再取结果，
                         // 任何调用方都不该因为运算符不在白名单里就编译失败。
                         _ => {
