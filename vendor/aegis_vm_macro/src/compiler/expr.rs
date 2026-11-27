@@ -103,6 +103,58 @@ impl Compiler {
             // Binary operations
             // =========================================================
             Expr::Binary(binary) => {
+                // 寄存器快路径：两侧都是简单操作数（变量或整数常量）且运算符受支持时，
+                // 求值全程走寄存器，只把结果压栈一次交给调用方。
+                // 这样 `x + y` 不再把两个操作数各压一次栈。
+                if matches!(binary.op, BinOp::Add(_) | BinOp::Mul(_)) {
+                    // 递归形态也走寄存器：compile_expr_to_reg 自己会用临时寄存器
+                    // 处理子表达式，避免中间结果经栈中转。
+                    fn supported(e: &Expr) -> bool {
+                        match e {
+                            Expr::Path(_) => true,
+                            // 立即数形态只编到 32 位：`compile_expr_to_reg` 里是
+                            // `emit_add_reg_imm(dst, imm as u32)`，超过 u32 的常量会被截断。
+                            // tests/polymorphic.rs 的 `x + 0x123456789ABCDEF0` 正是这么算错的。
+                            Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }) => lit
+                                .base10_parse::<u64>()
+                                .map(|v| v <= u32::MAX as u64)
+                                .unwrap_or(false),
+                            // 必须递归判断：`(x ^ y) + (x & y)` 顶层是 Add，
+                            // 但子节点 ^ 和 & 是 compile_expr_to_reg 不支持的，
+                            // 只看顶层运算符会把这种表达式放进快路径然后编译失败。
+                            Expr::Binary(b) => {
+                                matches!(b.op, BinOp::Add(_) | BinOp::Mul(_))
+                                    && supported(&b.left)
+                                    && supported(&b.right)
+                            }
+                            // `(a + b) * (c + d)` 的子表达式在 syn 里是 Expr::Paren，
+                            // 不穿透括号就会把最常见的嵌套写法挡在快路径之外。
+                            Expr::Paren(p) => supported(&p.expr),
+                            Expr::Group(g) => supported(&g.expr),
+                            _ => false,
+                        }
+                    }
+                    let sl = supported(&binary.left);
+                    let sr = supported(&binary.right);
+                    if std::env::var_os("AEGIS_REGDBG").is_some() {
+                        eprintln!(
+                            "REGDBG op={:?} left_supported={} right_supported={}",
+                            std::mem::discriminant(&binary.op),
+                            sl,
+                            sr
+                        );
+                    }
+                    if sl && sr {
+                        let dst = self.next_local_reg;
+                        let saved = dst;
+                        self.next_local_reg = dst.saturating_add(1);
+                        let r = self.compile_expr_to_reg(&Expr::Binary(binary.clone()), dst);
+                        self.next_local_reg = saved;
+                        r?;
+                        self.emit_push_reg(dst);
+                        return Ok(());
+                    }
+                }
                 // Check for compound assignment first
                 match binary.op {
                     BinOp::AddAssign(_) | BinOp::SubAssign(_) | BinOp::MulAssign(_) |
@@ -1112,6 +1164,9 @@ impl Compiler {
     /// 把表达式编译进 `dst` 寄存器。调用前必须 `can_expr_to_reg(expr) == true`。
     pub(crate) fn compile_expr_to_reg(&mut self, expr: &Expr, dst: u8) -> Result<(), CompileError> {
         match expr {
+            // 括号不改变求值，穿透即可；不穿透会把 `(a + b)` 这类最常见写法挡在寄存器路径外。
+            Expr::Paren(p) => return self.compile_expr_to_reg(&p.expr, dst),
+            Expr::Group(g) => return self.compile_expr_to_reg(&g.expr, dst),
             Expr::Path(_) => {
                 let src = self
                     .expr_var_reg(expr)

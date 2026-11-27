@@ -11,6 +11,28 @@ use crate::substitution::{
     ControlFlowSubstitution,
 };
 
+thread_local! {
+    /// 本次编译发射的压栈、弹栈条数（线程局部：测试并行，全局变量会被兄弟用例污染）。
+    static STACK_PUSHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static STACK_POPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// 清零，供测试在编译前调用。
+pub(crate) fn reset_stack_moves() {
+    STACK_PUSHES.with(|c| c.set(0));
+    STACK_POPS.with(|c| c.set(0));
+}
+
+/// 取本次编译发射的压栈/弹栈条数。
+pub(crate) fn stack_moves_emitted() -> u64 {
+    STACK_PUSHES.with(|c| c.get()) + STACK_POPS.with(|c| c.get())
+}
+
+/// 分别给出 (压栈次数, 弹栈次数)，用于判断搬运来自哪一侧。
+pub(crate) fn stack_moves_split() -> (u64, u64) {
+    (STACK_PUSHES.with(|c| c.get()), STACK_POPS.with(|c| c.get()))
+}
+
 impl Compiler {
     /// Emit an opcode (automatically encoded via shuffle table)
     pub(crate) fn emit_op(&mut self, base_opcode: u8) {
@@ -347,6 +369,7 @@ impl Compiler {
     /// Emit PUSH_REG instruction
     #[track_caller]
     pub(crate) fn emit_push_reg(&mut self, reg: u8) {
+        STACK_PUSHES.with(|c| c.set(c.get() + 1));
         // 栈搬运归因：AEGIS_STK=1 时打印调用点，供统计「谁在搬栈」。
         if std::env::var_os("AEGIS_STK").is_some() {
             eprintln!("STK PUSH {} {:?}", reg, std::panic::Location::caller());
@@ -358,6 +381,7 @@ impl Compiler {
     /// Emit POP_REG instruction
     #[track_caller]
     pub(crate) fn emit_pop_reg(&mut self, reg: u8) {
+        STACK_POPS.with(|c| c.set(c.get() + 1));
         // 同上：AEGIS_STK=1 时打印调用点。
         if std::env::var_os("AEGIS_STK").is_some() {
             eprintln!("STK POP {} {:?}", reg, std::panic::Location::caller());

@@ -14,6 +14,7 @@
 //! - cast.rs: Type cast compilation (as i32, as u8, etc.)
 
 mod emit;
+mod regs;
 mod literal;
 mod expr;
 mod stmt;
@@ -701,4 +702,50 @@ fn is_hoistable_arg(ty: &syn::Type) -> bool {
         segment.ident.to_string().as_str(),
         "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64" | "usize" | "bool"
     )
+}
+
+// TDD：M1 的第一步测试。**先红后绿**——此刻编译器还是栈式求值，所以它必须失败。
+#[cfg(test)]
+mod regalloc_tdd {
+    use super::*;
+    use quote::quote;
+    use syn::{parse2, ItemFn};
+
+    fn compile_src(src: proc_macro2::TokenStream) -> Vec<u8> {
+        let func: ItemFn = parse2(src).expect("测试源码应能解析成函数");
+        compile_function_full(&func, false, false).expect("测试源码应能编译")
+    }
+
+    /// `x + y`：求值全程走寄存器，栈上只留下两处与表达式无关的既定动作。
+    ///
+    /// 实测拆解（`stack_moves_split`）：
+    /// - 压栈 1 次 = 把返回值交给 `HALT`（`expr.rs:290-300`，HALT 从栈顶取值，属既有约定，M1 不改）；
+    /// - 弹栈 2 次 = 两个实参的 `hoist_arg` prologue（`mod.rs:315`），属 **M3** 范围。
+    /// 因此「表达式部分零栈操作」的可验证目标就是 (1, 形参个数)。
+    #[test]
+    fn binop_add_uses_registers_not_stack() {
+        emit::reset_stack_moves();
+        let _ = compile_src(quote! {
+            fn add(x: u64, y: u64) -> u64 { x + y }
+        });
+        assert_eq!(
+            emit::stack_moves_split(),
+            (1, 2),
+            "x + y：压栈应为 1（返回值交给 HALT），弹栈应为 2（两个实参的 prologue）"
+        );
+    }
+
+    /// `(a + b) * (c + d)`：中间值全部走寄存器，栈上同样只剩返回值与四个实参的 prologue。
+    #[test]
+    fn nested_binop_uses_registers_not_stack() {
+        emit::reset_stack_moves();
+        let _ = compile_src(quote! {
+            fn calc(a: u64, b: u64, c: u64, d: u64) -> u64 { (a + b) * (c + d) }
+        });
+        assert_eq!(
+            emit::stack_moves_split(),
+            (1, 4),
+            "嵌套运算：压栈应为 1（返回值交给 HALT），弹栈应为 4（四个实参的 prologue）"
+        );
+    }
 }
