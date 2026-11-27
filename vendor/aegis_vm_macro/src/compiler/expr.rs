@@ -107,6 +107,7 @@ impl Compiler {
                 // 求值全程走寄存器，只把结果压栈一次交给调用方。
                 // 这样 `x + y` 不再把两个操作数各压一次栈。
                 if !self.reg_fastpath_disabled
+                    && self.stack_operand_depth == 0
                     && matches!(
                         binary.op,
                         BinOp::Add(_) | BinOp::Mul(_) | BinOp::BitXor(_) | BinOp::Shr(_)
@@ -194,8 +195,20 @@ impl Compiler {
                 }
 
                 // Compile operands
-                self.compile_expr(&binary.left)?;
-                self.compile_expr(&binary.right)?;
+                //
+                // 这两个操作数是由 emit_xxx 从栈上取值的，快路径如果把结果留在寄存器里
+                // 就会和栈式约定冲突（实测 `x >> (shift + 1)` 返回未移位的原值）。
+                // 所以给操作数编译加一层「栈操作数」标记，快路径见到它就让路。
+                self.stack_operand_depth += 1;
+                let left_res = self.compile_expr(&binary.left);
+                let right_res = if left_res.is_ok() {
+                    self.compile_expr(&binary.right)
+                } else {
+                    Ok(())
+                };
+                self.stack_operand_depth -= 1;
+                left_res?;
+                right_res?;
 
                 // Check if operands are signed for division
                 let use_signed = self.is_signed_expr(&binary.left) || self.is_signed_expr(&binary.right);
@@ -1264,11 +1277,23 @@ impl Compiler {
                 let result = self
                     .compile_expr_to_reg(&b.right, tmp)
                     .and_then(|()| self.compile_expr_to_reg(&b.left, dst))
-                    .map(|()| {
-                        if is_add {
-                            self.emit_add_reg_reg(dst, dst, tmp);
-                        } else {
-                            self.emit_mul_reg_reg(dst, dst, tmp);
+                    .map(|()| match b.op {
+                        BinOp::Add(_) => self.emit_add_reg_reg(dst, dst, tmp),
+                        BinOp::Mul(_) => self.emit_mul_reg_reg(dst, dst, tmp),
+                        BinOp::BitXor(_) => self.emit_xor_reg_reg(dst, dst, tmp),
+                        // 这里不能有「其它情况当乘法」的兜底：
+                        // 原来写的是 `if is_add { add } else { mul }`，
+                        // 于是 `x >> (shift + 1)` 的右操作数是子表达式时被编成了 `x * (shift + 1)`，
+                        // 实测返回 u64::MAX（应为 0x7FFF...）。
+                        _ => {
+                            // 同上面的回退：必须先关快路径，否则
+                            // compile_expr → compile_expr_to_reg → compile_expr 无限递归（实测 SIGSEGV）
+                            self.reg_fastpath_disabled = true;
+                            let r = self.compile_expr(expr);
+                            self.reg_fastpath_disabled = false;
+                            if r.is_ok() {
+                                self.emit_pop_reg(dst);
+                            }
                         }
                     });
                 self.next_local_reg = saved;
