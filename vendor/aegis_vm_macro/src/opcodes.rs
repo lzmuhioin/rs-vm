@@ -79,6 +79,8 @@ pub mod control {
     pub const AND_REG_REG: u8 = 0xA5;
     /// AND_REG_IMM: `r = r & imm`（寄存器形态，末尾追加）
     pub const AND_REG_IMM: u8 = 0xA6;
+    /// NATIVE_READ_REG: `reg = input[offset]`（末尾追加，省掉 hoist 的 POP）
+    pub const NATIVE_READ_REG: u8 = 0xA7;
     pub const JCC_Z: u8 = 0;
     pub const JCC_NZ: u8 = 1;
     pub const JCC_GT: u8 = 2;

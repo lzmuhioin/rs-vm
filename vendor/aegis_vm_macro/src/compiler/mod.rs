@@ -323,8 +323,8 @@ impl Compiler {
         };
         let reg = self.next_local_reg;
         self.next_local_reg += 1;
-        self.emit_native_read(offset as u16);
-        self.emit_pop_reg(reg);
+        // 直接读进目标寄存器：原来是 NATIVE_READ + POP_REG，每次形参提升多两次栈操作。
+        self.emit_native_read_reg(reg, offset as u16);
         self.arg_regs.insert(name.to_string(), reg);
     }
 
@@ -731,8 +731,9 @@ mod regalloc_tdd {
     ///
     /// 实测拆解（`stack_moves_split`）：
     /// - 压栈 1 次 = 把返回值交给 `HALT`（`expr.rs:290-300`，HALT 从栈顶取值，属既有约定，M1 不改）；
-    /// - 弹栈 2 次 = 两个实参的 `hoist_arg` prologue（`mod.rs:315`），属 **M3** 范围。
-    /// 因此「表达式部分零栈操作」的可验证目标就是 (1, 形参个数)。
+    /// - 弹栈 0 次 = M3 的成果：`hoist_arg` 改用 `NATIVE_READ_REG` 直接读进寄存器，
+    ///   原来这里是「NATIVE_READ + POP_REG」，每个形参两次栈操作。
+    /// 所以现在的规格是 (1, 0)。
     #[test]
     fn binop_add_uses_registers_not_stack() {
         emit::reset_stack_moves();
@@ -741,8 +742,8 @@ mod regalloc_tdd {
         });
         assert_eq!(
             emit::stack_moves_split(),
-            (1, 2),
-            "x + y：压栈应为 1（返回值交给 HALT），弹栈应为 2（两个实参的 prologue）"
+            (1, 0),
+            "x + y：压栈应为 1（返回值交给 HALT），弹栈应为 0（形参直接用 NATIVE_READ_REG 读进寄存器）"
         );
     }
 
@@ -755,8 +756,8 @@ mod regalloc_tdd {
         });
         assert_eq!(
             emit::stack_moves_split(),
-            (1, 4),
-            "嵌套运算：压栈应为 1（返回值交给 HALT），弹栈应为 4（四个实参的 prologue）"
+            (1, 0),
+            "嵌套运算：压栈应为 1（返回值交给 HALT），弹栈应为 0（四个形参同样不再经过栈）"
         );
     }
 }

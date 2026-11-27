@@ -522,6 +522,13 @@ impl Compiler {
     // =========================================================================
 
     /// Emit NATIVE_READ: Read from input buffer
+    /// NATIVE_READ_REG <reg:u8> <offset:u16>
+    pub(crate) fn emit_native_read_reg(&mut self, reg: u8, offset: u16) {
+        self.emit_op(control::NATIVE_READ_REG);
+        self.emit(reg);
+        self.emit_u16(offset);
+    }
+
     pub(crate) fn emit_native_read(&mut self, offset: u16) {
         self.emit_op(native::NATIVE_READ);
         self.emit_u16(offset);

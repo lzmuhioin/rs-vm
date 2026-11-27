@@ -239,6 +239,11 @@ pub fn w_and_reg_imm(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
 }
 
 #[inline(always)]
+pub fn w_native_read_reg(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
+    super::handle_native_read_reg(s)
+}
+
+#[inline(always)]
 pub fn w_cmp_reg_reg_jcc(s: &mut VmState, _: &NativeRegistry) -> VmResult<()> {
     super::handle_cmp_reg_reg_jcc(s)
 }
@@ -564,6 +569,7 @@ pub const HANDLER_TABLE: [Handler; 256] = {
     table[0xA4] = w_xor_reg_imm;
     table[0xA5] = w_and_reg_reg;
     table[0xA6] = w_and_reg_imm;
+    table[0xA7] = w_native_read_reg;
 
     // Special (0x40-0x45)
     table[0x40] = w_nop;
