@@ -638,6 +638,8 @@ pub struct CompileResult {
 
 /// Compile a function with configurable options, returning native call info
 pub fn compile_function_with_natives(func: &ItemFn, mba_enabled: bool, substitution_enabled: bool) -> Result<(Vec<u8>, NativeCallCollector), CompileError> {
+    // AEGIS_DUMP=1 时记录逻辑指令流（含操作数），函数返回前打印。
+    emit::trace_reset();
     let mut compiler = Compiler::with_options(mba_enabled, substitution_enabled);
 
     // Register function arguments
@@ -661,6 +663,7 @@ pub fn compile_function_with_natives(func: &ItemFn, mba_enabled: bool, substitut
     // Extract native collector
     let native_collector = std::mem::take(&mut compiler.native_collector);
 
+    emit::trace_dump();
     Ok((bytecode, native_collector))
 }
 

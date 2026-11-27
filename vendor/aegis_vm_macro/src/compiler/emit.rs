@@ -15,6 +15,44 @@ thread_local! {
     /// 本次编译发射的压栈、弹栈条数（线程局部：测试并行，全局变量会被兄弟用例污染）。
     static STACK_PUSHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static STACK_POPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
+    /// AEGIS_DUMP 用的指令流轨迹：(base opcode, 操作数字节)。
+    /// 只记录**逻辑指令**——emit_op 里注入的 NOP / 死代码不经过 `emit`，
+    /// 因此不会污染操作数，读出来的序列就是源码语义的那一份。
+    static TRACE: std::cell::RefCell<Vec<(u8, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 清空指令流轨迹；每个函数编译开始时由 `compile_function_full` 调用。
+pub(crate) fn trace_reset() {
+    TRACE.with(|t| t.borrow_mut().clear());
+}
+
+/// 把一条轨迹按「偏移 OP 操作数」打印出来（仅 AEGIS_DUMP=1 时输出）。
+pub(crate) fn trace_dump() {
+    if std::env::var_os("AEGIS_DUMP").is_none() {
+        return;
+    }
+    TRACE.with(|t| {
+        let trace = t.borrow();
+        let mut offset = 0usize;
+        for (idx, (op, operands)) in trace.iter().enumerate() {
+            let hex: String = operands.iter().map(|b| format!("{b:02x}")).collect();
+            eprintln!("  {idx:>3} {offset:>4}  {op:02X} {hex}");
+            offset += 1 + operands.len();
+        }
+    });
+}
+
+/// 把操作数记到当前指令上。
+fn trace_operand(bytes: &[u8]) {
+    if std::env::var_os("AEGIS_DUMP").is_none() {
+        return;
+    }
+    TRACE.with(|t| {
+        if let Some(last) = t.borrow_mut().last_mut() {
+            last.1.extend_from_slice(bytes);
+        }
+    });
 }
 
 /// 清零，供测试在编译前调用。
@@ -69,17 +107,23 @@ impl Compiler {
             self.bytecode.push(nop_shuffled);
         }
 
+        if std::env::var_os("AEGIS_DUMP").is_some() {
+            TRACE.with(|t| t.borrow_mut().push((base_opcode, Vec::new())));
+        }
+
         let shuffled = self.opcode_table.encode(base_opcode);
         self.bytecode.push(shuffled);
     }
 
     /// Emit a single byte
     pub(crate) fn emit(&mut self, byte: u8) {
+        trace_operand(&[byte]);
         self.bytecode.push(byte);
     }
 
     /// Emit a u16 (little-endian)
     pub(crate) fn emit_u16(&mut self, value: u16) {
+        trace_operand(&value.to_le_bytes());
         self.bytecode.extend_from_slice(&value.to_le_bytes());
     }
 
@@ -570,6 +614,7 @@ impl Compiler {
     pub(crate) fn emit_mov_imm(&mut self, dst: u8, value: u64) {
         self.emit_op(register::MOV_IMM);
         self.emit(dst);
+        trace_operand(&value.to_le_bytes());
         self.bytecode.extend_from_slice(&value.to_le_bytes());
     }
 
@@ -577,6 +622,7 @@ impl Compiler {
     pub(crate) fn emit_add_reg_imm(&mut self, dst: u8, imm: u32) {
         self.emit_op(control::ADD_REG_IMM);
         self.emit(dst);
+        trace_operand(&imm.to_le_bytes());
         self.bytecode.extend_from_slice(&imm.to_le_bytes());
     }
 
@@ -592,6 +638,7 @@ impl Compiler {
     pub(crate) fn emit_mul_reg_imm(&mut self, dst: u8, imm: u32) {
         self.emit_op(control::MUL_REG_IMM);
         self.emit(dst);
+        trace_operand(&imm.to_le_bytes());
         self.bytecode.extend_from_slice(&imm.to_le_bytes());
     }
 
