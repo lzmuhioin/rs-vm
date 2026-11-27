@@ -110,7 +110,11 @@ impl Compiler {
                     && self.stack_operand_depth == 0
                     && matches!(
                         binary.op,
-                        BinOp::Add(_) | BinOp::Mul(_) | BinOp::BitXor(_) | BinOp::Shr(_)
+                        BinOp::Add(_)
+                            | BinOp::Mul(_)
+                            | BinOp::BitXor(_)
+                            | BinOp::Shr(_)
+                            | BinOp::BitAnd(_)
                     )
                 {
                     // 递归形态也走寄存器：compile_expr_to_reg 自己会用临时寄存器
@@ -134,6 +138,16 @@ impl Compiler {
                                 }
                                 // 异或：右值是变量（寄存器形态）或 u32 以内的常量
                                 BinOp::BitXor(_) => {
+                                    supported(&b.left)
+                                        && (matches!(&*b.right, Expr::Path(_))
+                                            || matches!(
+                                                &*b.right,
+                                                Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. })
+                                                    if lit.base10_parse::<u64>().map(|v| v <= u32::MAX as u64).unwrap_or(false)
+                                            ))
+                                }
+                                // 与：右值是变量或 u32 以内的常量
+                                BinOp::BitAnd(_) => {
                                     supported(&b.left)
                                         && (matches!(&*b.right, Expr::Path(_))
                                             || matches!(
@@ -1223,7 +1237,7 @@ impl Compiler {
             Expr::Binary(b) => {
                 let is_add = match b.op {
                     BinOp::Add(_) => true,
-                    BinOp::Mul(_) | BinOp::BitXor(_) | BinOp::Shr(_) => false,
+                    BinOp::Mul(_) | BinOp::BitXor(_) | BinOp::Shr(_) | BinOp::BitAnd(_) => false,
                     _ => {
                         return Err(CompileError(
                             "expr→reg: unsupported binary operator".to_string(),
@@ -1239,6 +1253,7 @@ impl Compiler {
                         BinOp::Mul(_) => self.emit_mul_reg_imm(dst, imm as u32),
                         BinOp::Shr(_) => self.emit_shr_reg_imm(dst, imm as u32),
                         BinOp::BitXor(_) => self.emit_xor_reg_imm(dst, imm as u32),
+                        BinOp::BitAnd(_) => self.emit_and_reg_imm(dst, imm as u32),
                         // 没有对应的寄存器形态：退回栈式求值再取结果，
                         // 任何调用方都不该因为运算符不在白名单里就编译失败。
                         _ => {
@@ -1259,6 +1274,7 @@ impl Compiler {
                         BinOp::Add(_) => self.emit_add_reg_reg(dst, dst, rreg),
                         BinOp::Mul(_) => self.emit_mul_reg_reg(dst, dst, rreg),
                         BinOp::BitXor(_) => self.emit_xor_reg_reg(dst, dst, rreg),
+                        BinOp::BitAnd(_) => self.emit_and_reg_reg(dst, dst, rreg),
                         _ => {
                             self.reg_fastpath_disabled = true;
                             let r = self.compile_expr(expr);
@@ -1281,6 +1297,7 @@ impl Compiler {
                         BinOp::Add(_) => self.emit_add_reg_reg(dst, dst, tmp),
                         BinOp::Mul(_) => self.emit_mul_reg_reg(dst, dst, tmp),
                         BinOp::BitXor(_) => self.emit_xor_reg_reg(dst, dst, tmp),
+                        BinOp::BitAnd(_) => self.emit_and_reg_reg(dst, dst, tmp),
                         // 这里不能有「其它情况当乘法」的兜底：
                         // 原来写的是 `if is_add { add } else { mul }`，
                         // 于是 `x >> (shift + 1)` 的右操作数是子表达式时被编成了 `x * (shift + 1)`，

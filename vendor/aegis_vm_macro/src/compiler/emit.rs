@@ -597,6 +597,21 @@ impl Compiler {
         self.emit(b);
     }
 
+    pub(crate) fn emit_and_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_op(control::AND_REG_REG);
+        self.emit(dst);
+        self.emit(a);
+        self.emit(b);
+    }
+
+    pub(crate) fn emit_and_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_op(control::AND_REG_IMM);
+        self.emit(reg);
+        for b in imm.to_le_bytes() {
+            self.emit(b);
+        }
+    }
+
     pub(crate) fn emit_xor_reg_imm(&mut self, reg: u8, imm: u32) {
         self.emit_op(control::XOR_REG_IMM);
         self.emit(reg);

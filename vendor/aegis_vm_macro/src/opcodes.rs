@@ -75,6 +75,10 @@ pub mod control {
     pub const SHR_REG_IMM: u8 = 0xA3;
     /// XOR_REG_IMM: `r = r ^ imm`（寄存器形态，末尾追加）
     pub const XOR_REG_IMM: u8 = 0xA4;
+    /// AND_REG_REG: `dst = a & b`（寄存器形态，末尾追加）
+    pub const AND_REG_REG: u8 = 0xA5;
+    /// AND_REG_IMM: `r = r & imm`（寄存器形态，末尾追加）
+    pub const AND_REG_IMM: u8 = 0xA6;
     pub const JCC_Z: u8 = 0;
     pub const JCC_NZ: u8 = 1;
     pub const JCC_GT: u8 = 2;
