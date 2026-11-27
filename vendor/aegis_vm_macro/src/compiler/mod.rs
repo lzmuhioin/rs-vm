@@ -750,6 +750,32 @@ mod regalloc_tdd {
         );
     }
 
+    /// `let` 初始化不许在栈上留残留。
+    ///
+    /// 曾经 `compile_local` 先无条件 `compile_expr`（值入栈），M4 快路径成功时直接 return，
+    /// 那次压栈就没人弹——`let mut x = b;` 实测留下一条 `PUSH_REG`，
+    /// 循环体里的 let 每轮涨一格栈（栈无限增长）。
+    /// 现在快路径成功前会把那串栈式求值整体回滚，所以压弹必须成对。
+    #[test]
+    fn let_init_leaves_no_stack_ops() {
+        emit::reset_stack_moves();
+        let _ = compile_src(quote! {
+            fn let_only(a: u64) -> u64 {
+                let x = a;
+                x
+            }
+        });
+        // 只剩 1 次压栈：把返回值交给 HALT 的既有约定（所有函数都有，与 let 无关）。
+        // 修之前这里是 2——多出来的那一条就是 let 快路径留下的栈残留（实测证据：
+        // 改前 2、改后 1，弹栈都是 0）。所以「多一条」才是这条用例要守的东西。
+        let (pushes, pops) = emit::stack_moves_split();
+        assert_eq!(
+            (pushes, pops),
+            (1, 0),
+            "let 初始化只该留 1 次压栈（返回值约定），多出来的就是栈泄漏"
+        );
+    }
+
     /// 赋值语句的「值被丢弃」路径：`a = a + b;` 不该出现任何栈搬运。
     ///
     /// 原来所有带分号的语句都编译成 `compile_expr(); DROP;`，

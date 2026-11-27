@@ -9,6 +9,11 @@ impl Compiler {
     /// Compile a local variable binding: let x = expr;
     pub(crate) fn compile_local(&mut self, local: &Local) -> Result<(), CompileError> {
         if let Some(init) = &local.init {
+            // 先记下「求值前的产物大小与栈计数」：走寄存器快路径时要把这一步整体撤掉。
+            // 为什么不直接跳过 compile_expr：它在 define_var 之前分配临时寄存器，
+            // 跳过会让后续变量拿到不同寄存器号（实测把 mixed 的快路径整片挤掉，+9700 条）。
+            let stack_mark = (self.bytecode.len(), crate::compiler::emit::stack_moves_split());
+
             // Compile initializer first (leaves value on stack)
             self.compile_expr(&init.expr)?;
 
@@ -28,12 +33,23 @@ impl Compiler {
                 let pool = std::rc::Rc::clone(&self.scratch);
                 if let Some(guard) = crate::compiler::regs::RegGuard::acquire(&pool) {
                     let tmp = guard.reg();
+
+                    // 把刚才那串栈式求值整体撤掉（字节码 + 栈计数），
+                    // 否则它压进去的值没人消费——每个 let 泄漏一格栈，
+                    // 循环体里的 let 会让栈无限增长。快路径会自己重算一遍。
+                    self.bytecode.truncate(stack_mark.0);
+                    crate::compiler::emit::restore_stack_moves(stack_mark.1);
+
                     if self.try_expr_to_reg(&init.expr, tmp).is_some() {
                         let reg = self.define_var(&name, var_type, is_signed)?;
                         self.emit_mov_reg(reg, tmp);
                         drop(guard);
                         return Ok(());
                     }
+
+                    // 快路径失败：把栈式求值按原样重新编一遍（编译期多一次，无运行期代价）。
+                    // 不能只恢复字节码——上面已经截断，只能重编。
+                    self.compile_expr(&init.expr)?;
                     drop(guard);
                 }
             }
