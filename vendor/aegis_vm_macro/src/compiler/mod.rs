@@ -747,6 +747,28 @@ mod regalloc_tdd {
         );
     }
 
+    /// 赋值语句的「值被丢弃」路径：`a = a + b;` 不该出现任何栈搬运。
+    ///
+    /// 原来所有带分号的语句都编译成 `compile_expr(); DROP;`，
+    /// 赋值因此先压一次结果再丢掉——实测 locals_heavy 每次调用 20 次 DUP、63 次 DROP。
+    /// 改成 `compile_expr_discarded` 后赋值直接落寄存器，弹栈应为 0。
+    #[test]
+    fn assign_stmt_drops_no_stack_ops() {
+        emit::reset_stack_moves();
+        let _ = compile_src(quote! {
+            fn assign_stmt(x: u64, y: u64) -> u64 {
+                let mut a = x;
+                a = a + y;
+                a
+            }
+        });
+        assert_eq!(
+            emit::stack_moves_split().1,
+            0,
+            "a = a + y; 是写寄存器，弹栈应为 0"
+        );
+    }
+
     /// `(a + b) * (c + d)`：中间值全部走寄存器，栈上同样只剩返回值与四个实参的 prologue。
     #[test]
     fn nested_binop_uses_registers_not_stack() {

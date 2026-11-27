@@ -230,6 +230,40 @@ impl Compiler {
         }
     }
 
+    /// 语句级「值被丢弃」的编译。
+    ///
+    /// 原来所有带分号的语句都是 `compile_expr(); emit_drop();`，
+    /// 赋值语句因此先压一次结果再丢掉——实测 locals_heavy 每次调用有 20 次 DUP、63 次 DROP，
+    /// 大头就在这儿。赋值本来就是把值写进寄存器，根本不需要经过栈。
+    pub(crate) fn compile_expr_discarded(&mut self, expr: &Expr) -> Result<(), CompileError> {
+        match expr {
+            Expr::Assign(assign) => self.compile_assignment(&assign.left, &assign.right),
+            // 复合赋值（`sum += w`）同理：它也是写寄存器，不需要把结果压栈再丢。
+            Expr::Binary(binary)
+                if matches!(
+                    binary.op,
+                    BinOp::AddAssign(_)
+                        | BinOp::SubAssign(_)
+                        | BinOp::MulAssign(_)
+                        | BinOp::DivAssign(_)
+                        | BinOp::RemAssign(_)
+                        | BinOp::BitXorAssign(_)
+                        | BinOp::BitAndAssign(_)
+                        | BinOp::BitOrAssign(_)
+                        | BinOp::ShlAssign(_)
+                        | BinOp::ShrAssign(_)
+                ) =>
+            {
+                self.compile_assign_op(&binary.left, &binary.op, &binary.right)
+            }
+            _ => {
+                self.compile_expr(expr)?;
+                self.emit_drop();
+                Ok(())
+            }
+        }
+    }
+
     /// Compile simple assignment: x = expr
     pub(crate) fn compile_assignment(&mut self, target: &Expr, value: &Expr) -> Result<(), CompileError> {
         match target {
