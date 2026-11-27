@@ -107,7 +107,6 @@ impl Compiler {
                 // 求值全程走寄存器，只把结果压栈一次交给调用方。
                 // 这样 `x + y` 不再把两个操作数各压一次栈。
                 if !self.reg_fastpath_disabled
-                    && self.stack_operand_depth == 0
                     && matches!(
                         binary.op,
                         BinOp::Add(_)
@@ -185,13 +184,21 @@ impl Compiler {
                         );
                     }
                     if sl && sr {
-                        let dst = self.next_local_reg;
-                        let saved = dst;
-                        self.next_local_reg = dst.saturating_add(1);
+                        // 临时寄存器从池里取（240..=247，与变量区 0..=239 不相交），
+                        // 守卫在作用域结束时自动归还；池空就回退栈式求值。
+                        let pool = std::rc::Rc::clone(&self.scratch);
+                        let Some(guard) = crate::compiler::regs::RegGuard::acquire(&pool) else {
+                            self.reg_fastpath_disabled = true;
+                            let r = self.compile_expr(&Expr::Binary(binary.clone()));
+                            self.reg_fastpath_disabled = false;
+                            r?;
+                            return Ok(());
+                        };
+                        let dst = guard.reg();
                         let r = self.compile_expr_to_reg(&Expr::Binary(binary.clone()), dst);
-                        self.next_local_reg = saved;
                         r?;
                         self.emit_push_reg(dst);
+                        drop(guard);
                         return Ok(());
                     }
                 }

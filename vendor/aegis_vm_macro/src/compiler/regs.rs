@@ -11,9 +11,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// 运行时 `regs` 容量的默认值（`src/state.rs` 的 `DEFAULT_REGISTER_CAPACITY`）。
-/// 两份必须一致：宏按这个数分配，运行时按这个数开寄存器堆。
-pub(crate) const RUNTIME_REG_CAPACITY: usize = 32;
+/// 寄存器编号上限（`src/state.rs` 的 `MAX_REGISTERS`）。
+///
+/// 注意不是 `DEFAULT_REGISTER_CAPACITY`（32）：运行时 `set_reg` 会按需扩容到 256，
+/// 所以高位编号是合法可用的。第一版按 32 截断，导致 `RegPool::new(240, 8)`
+/// 算出空池，快路径每次都静默回退——实测表现为「指令里一条 ADD 都没有」。
+pub(crate) const RUNTIME_REG_CAPACITY: usize = 256;
 
 /// 分配池：低位一段留给既有代码，分配器只用高位的空闲段。
 #[derive(Debug)]
@@ -167,7 +170,16 @@ mod tests {
 
     #[test]
     fn pool_respects_runtime_capacity() {
+        // 容量约束说的是「可分配数 = min(count, 上限 - base)」，两个方向都要验：
+        // 数量本身不超上限时按 count 给；越过上限时被截断。
         let p = RegPool::new(28, 100);
-        assert_eq!(p.available(), RUNTIME_REG_CAPACITY - 28, "不得超过运行时容量");
+        assert_eq!(p.available(), 100, "上限内应按请求数量给");
+
+        let q = RegPool::new(250, 100);
+        assert_eq!(
+            q.available(),
+            RUNTIME_REG_CAPACITY - 250,
+            "越过上限时必须截断"
+        );
     }
 }

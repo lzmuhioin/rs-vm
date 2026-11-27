@@ -180,6 +180,10 @@ pub struct Compiler {
     pub(crate) bytecode: Vec<u8>,
     /// 正在给「栈式二元运算」编译操作数的层数。此层数 >0 时不许走寄存器快路径。
     pub(crate) stack_operand_depth: usize,
+    /// 表达式临时寄存器池：只用 248..=255 这一段。
+    /// 变量区上限是 248（`define_var_internal` 到 248 就报错），形参提升上限是 240，
+    /// 所以 248 以上没有任何变量，快路径拿这里的号不会与变量撞车。
+    pub(crate) scratch: std::rc::Rc<std::cell::RefCell<regs::RegPool>>,
     /// 栈式回退期间关掉寄存器快路径，避免 compile_expr → compile_expr_to_reg 互相递归。
     pub(crate) reg_fastpath_disabled: bool,
     /// Function argument name -> input buffer offset
@@ -246,6 +250,7 @@ impl Compiler {
         Self {
             bytecode: Vec::new(),
             stack_operand_depth: 0,
+            scratch: std::rc::Rc::new(std::cell::RefCell::new(regs::RegPool::new(248, 8))),
             reg_fastpath_disabled: false,
             arg_offsets: BTreeMap::new(),
             arg_regs: BTreeMap::new(),
