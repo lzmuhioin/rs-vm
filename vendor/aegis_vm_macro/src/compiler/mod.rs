@@ -765,14 +765,14 @@ mod regalloc_tdd {
                 x
             }
         });
-        // 只剩 1 次压栈：把返回值交给 HALT 的既有约定（所有函数都有，与 let 无关）。
-        // 修之前这里是 2——多出来的那一条就是 let 快路径留下的栈残留（实测证据：
-        // 改前 2、改后 1，弹栈都是 0）。所以「多一条」才是这条用例要守的东西。
+        // 判据是「压 − 弹 == 1」：那 1 次是返回值交给 HALT 的既有约定（与 let 无关）。
+        // 曾经 let 的寄存器快路径成功时直接 return，压进去的值没人弹，差值会变成 2——
+        // 循环体里的 let 每轮涨一格栈。这条用例守的就是这个差值。
         let (pushes, pops) = emit::stack_moves_split();
         assert_eq!(
-            (pushes, pops),
-            (1, 0),
-            "let 初始化只该留 1 次压栈（返回值约定），多出来的就是栈泄漏"
+            pushes.wrapping_sub(pops),
+            1,
+            "压/弹应只差返回值那一条（实际 {pushes}/{pops}），差更多就是栈泄漏"
         );
     }
 
@@ -783,18 +783,31 @@ mod regalloc_tdd {
     /// 改成 `compile_expr_discarded` 后赋值直接落寄存器，弹栈应为 0。
     #[test]
     fn assign_stmt_drops_no_stack_ops() {
+        // 比「有赋值」与「无赋值」两版的差值，而不是绝对值：
+        // `let` 本身走栈（压+弹各一条）与本次改动无关，绝对数会随 let 的实现变化，
+        // 而「赋值多不多出栈操作」才是这条用例要守的性质。
         emit::reset_stack_moves();
         let _ = compile_src(quote! {
-            fn assign_stmt(x: u64, y: u64) -> u64 {
+            fn only_let(x: u64, y: u64) -> u64 {
+                let mut a = x;
+                a
+            }
+        });
+        let base = emit::stack_moves_split();
+
+        emit::reset_stack_moves();
+        let _ = compile_src(quote! {
+            fn with_assign(x: u64, y: u64) -> u64 {
                 let mut a = x;
                 a = a + y;
                 a
             }
         });
+        let with = emit::stack_moves_split();
+
         assert_eq!(
-            emit::stack_moves_split().1,
-            0,
-            "a = a + y; 是写寄存器，弹栈应为 0"
+            with, base,
+            "赋值语句不该引入任何栈操作（有赋值 {with:?} vs 无赋值 {base:?}）"
         );
     }
 
