@@ -325,12 +325,16 @@ impl ZeroSubstitution {
         bytecode.push(encode(stack::PUSH_IMM8));
         bytecode.push(x);
         bytecode.push(encode(stack::DUP));
+        // 直写字节不进 emit_op，必须手动补记，否则反汇编会少两条指令
+        crate::compiler::emit::trace_raw(stack::PUSH_IMM8, &[x]);
+        crate::compiler::emit::trace_raw(stack::DUP, &[]);
     }
 
     /// Emit standard zero
     pub fn emit_original<F: Fn(u8) -> u8>(bytecode: &mut Vec<u8>, encode: &F) {
         bytecode.push(encode(stack::PUSH_IMM8));
         bytecode.push(0);
+        crate::compiler::emit::trace_raw(stack::PUSH_IMM8, &[0]);
     }
 }
 

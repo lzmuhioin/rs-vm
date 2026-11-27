@@ -28,6 +28,122 @@ pub(crate) fn trace_reset() {
 }
 
 /// 把一条轨迹按「偏移 OP 操作数」打印出来（仅 AEGIS_DUMP=1 时输出）。
+/// opcode → 助记符。由 `opcodes.rs` 的常量表生成（不手写，避免抄错）。
+fn mnemonic(op: u8) -> &'static str {
+    match op {
+        0x00 => "JCC_Z",
+        0x01 => "PUSH_IMM",
+        0x02 => "PUSH_IMM8",
+        0x03 => "PUSH_REG",
+        0x04 => "POP_REG",
+        0x05 => "DUP",
+        0x06 => "SWAP",
+        0x07 => "DROP",
+        0x08 => "PUSH_IMM16",
+        0x09 => "PUSH_IMM32",
+        0x10 => "MOV_IMM",
+        0x11 => "MOV_REG",
+        0x12 => "LOAD_MEM",
+        0x13 => "STORE_MEM",
+        0x20 => "ADD",
+        0x21 => "SUB",
+        0x22 => "MUL",
+        0x23 => "XOR",
+        0x24 => "AND",
+        0x25 => "OR",
+        0x26 => "SHL",
+        0x27 => "SHR",
+        0x28 => "NOT",
+        0x29 => "ROL",
+        0x2A => "ROR",
+        0x2B => "INC",
+        0x2C => "DEC",
+        0x30 => "CMP",
+        0x31 => "JMP",
+        0x32 => "JZ",
+        0x33 => "JNZ",
+        0x34 => "JGT",
+        0x35 => "JLT",
+        0x36 => "JGE",
+        0x37 => "JLE",
+        0x38 => "CALL",
+        0x39 => "RET",
+        0x40 => "NOP",
+        0x41 => "NOP_N",
+        0x42 => "OPAQUE_TRUE",
+        0x43 => "OPAQUE_FALSE",
+        0x44 => "HASH_CHECK",
+        0x45 => "TIMING_CHECK",
+        0x46 => "DIV",
+        0x47 => "MOD",
+        0x48 => "IDIV",
+        0x49 => "IMOD",
+        0x50 => "SEXT8",
+        0x51 => "SEXT16",
+        0x52 => "SEXT32",
+        0x53 => "TRUNC8",
+        0x54 => "TRUNC16",
+        0x55 => "TRUNC32",
+        0x60 => "LOAD8",
+        0x61 => "LOAD16",
+        0x62 => "LOAD32",
+        0x63 => "LOAD64",
+        0x64 => "STORE8",
+        0x65 => "STORE16",
+        0x66 => "STORE32",
+        0x67 => "STORE64",
+        0x70 => "HEAP_ALLOC",
+        0x71 => "HEAP_FREE",
+        0x72 => "HEAP_LOAD8",
+        0x73 => "HEAP_LOAD16",
+        0x74 => "HEAP_LOAD32",
+        0x75 => "HEAP_LOAD64",
+        0x76 => "HEAP_STORE8",
+        0x77 => "HEAP_STORE16",
+        0x78 => "HEAP_STORE32",
+        0x79 => "HEAP_STORE64",
+        0x7A => "HEAP_SIZE",
+        0x80 => "VEC_NEW",
+        0x81 => "VEC_LEN",
+        0x82 => "VEC_CAP",
+        0x83 => "VEC_PUSH",
+        0x84 => "VEC_POP",
+        0x85 => "VEC_GET",
+        0x86 => "VEC_SET",
+        0x87 => "VEC_REPEAT",
+        0x88 => "VEC_CLEAR",
+        0x89 => "VEC_RESERVE",
+        0x90 => "STR_NEW",
+        0x91 => "STR_LEN",
+        0x92 => "STR_PUSH",
+        0x93 => "STR_GET",
+        0x94 => "STR_SET",
+        0x95 => "STR_CMP",
+        0x96 => "STR_EQ",
+        0x97 => "STR_HASH",
+        0x98 => "STR_CONCAT",
+        0x9B => "CMP_REG_REG_JGE",
+        0x9C => "INC_REG",
+        0x9D => "ADD_REG_IMM",
+        0x9E => "ADD_REG_REG",
+        0x9F => "MUL_REG_IMM",
+        0xA0 => "MUL_REG_REG",
+        0xA1 => "CMP_REG_REG_JCC",
+        0xA2 => "XOR_REG_REG",
+        0xA3 => "SHR_REG_IMM",
+        0xA4 => "XOR_REG_IMM",
+        0xA5 => "AND_REG_REG",
+        0xA6 => "AND_REG_IMM",
+        0xA7 => "NATIVE_READ_REG",
+        0xF0 => "NATIVE_CALL",
+        0xF1 => "NATIVE_READ",
+        0xF2 => "NATIVE_WRITE",
+        0xF3 => "INPUT_LEN",
+        0xFE => "HALT_ERR",
+        0xFF => "HALT",
+        _ => "?",
+    }
+}
 pub(crate) fn trace_dump() {
     if std::env::var_os("AEGIS_DUMP").is_none() {
         return;
@@ -37,10 +153,23 @@ pub(crate) fn trace_dump() {
         let mut offset = 0usize;
         for (idx, (op, operands)) in trace.iter().enumerate() {
             let hex: String = operands.iter().map(|b| format!("{b:02x}")).collect();
-            eprintln!("  {idx:>3} {offset:>4}  {op:02X} {hex}");
+            eprintln!("  {idx:>3} {offset:>4}  {op:02X} {:<16} {hex}", mnemonic(*op));
             offset += 1 + operands.len();
         }
     });
+}
+
+/// 记录一条「绕过 emit_op 直接写进 bytecode」的指令。
+///
+/// 为什么要这个钩子：`ZeroSubstitution::emit_prefix` / `emit_original` 都是
+/// `bytecode.push(...)` 直写，不经过 emit_op，于是它们既不在轨迹里、也让轨迹里的偏移量
+/// 失去意义（偏移是记录的累加和，隐形字节不会计入）。缺了它们就无法做栈平衡核算——
+/// 实测正是靠这一点把「三路 if 的栈账」算错成 −1。
+pub(crate) fn trace_raw(op: u8, operands: &[u8]) {
+    if std::env::var_os("AEGIS_DUMP").is_none() {
+        return;
+    }
+    TRACE.with(|t| t.borrow_mut().push((op, operands.to_vec())));
 }
 
 /// 把操作数记到当前指令上。

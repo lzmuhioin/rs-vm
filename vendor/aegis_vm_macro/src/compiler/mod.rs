@@ -13,7 +13,7 @@
 //! - method.rs: Method call compilation (.len(), .push(), etc.)
 //! - cast.rs: Type cast compilation (as i32, as u8, etc.)
 
-mod emit;
+pub(crate) mod emit;
 mod regs;
 mod literal;
 mod expr;
