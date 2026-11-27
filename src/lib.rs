@@ -52,6 +52,8 @@ pub use aegis_vm_macro::obfuscate_strings;
 pub use aegis_vm_macro::aegis_str;
 
 pub mod error;
+#[cfg(feature = "prof")]
+pub mod prof;
 pub mod opcodes;
 pub mod state;
 pub mod handlers;

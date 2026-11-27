@@ -46,6 +46,10 @@ pub fn run_with_native_table(state: &mut VmState) -> VmResult<()> {
         // Fetch opcode
         let opcode = state.read_u8()?;
 
+        // 动态剖析：只统计，不改执行路径。
+        #[cfg(feature = "prof")]
+        crate::prof::tally(crate::build_config::OPCODE_DECODE[opcode as usize]);
+
         // Indirect dispatch via function pointer table
         dispatch_indirect(state, opcode, empty_registry)?;
     }

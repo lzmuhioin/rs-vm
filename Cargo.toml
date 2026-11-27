@@ -39,6 +39,8 @@ whitebox_lite = []
 # Experimental: Async VM engine for anti-analysis (state machine obfuscation)
 # Adds ~100 lines, no external dependencies. Custom micro-executor.
 async_vm = []
+# 动态性能剖析：统计每条指令实际执行多少次（默认关闭，零运行时开销）
+prof = []
 
 [profile.dev.build-override]
 opt-level = 2
@@ -67,3 +69,7 @@ harness = false
 
 [profile.bench]
 opt-level = 3
+
+[[bench]]
+name = "bottleneck"
+harness = false
