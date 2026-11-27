@@ -109,3 +109,39 @@ fn prof_total_scales_with_call_count() {
         prof::total()
     );
 }
+
+/// `total_without_junk()` 必须严格等于「总数 − NOP 计数」。
+/// 它存在的理由是把注入噪声里**唯一能单独认出来的那部分**扣掉；
+/// 这条用例钉住它的定义，防止以后有人把它改成「减掉所有可疑指令」。
+#[test]
+fn total_without_junk_subtracts_only_nops() {
+    let bytecode = [
+        stack::PUSH_IMM8,
+        1,
+        stack::PUSH_IMM8,
+        2,
+        arithmetic::ADD,
+        exec::HALT,
+    ];
+
+    let seed = [0x7Au8; 32];
+    let mut ctx = CryptoContext::new(seed);
+    let (ciphertext, nonce, tag) = ctx.encrypt(&bytecode).expect("加密");
+    let mut header = BytecodeHeader::new(ctx.build_id, 0, BytecodeFlags::Encrypted as u16);
+    header.nonce = nonce;
+    header.tag = tag;
+    header.code_len = ciphertext.len() as u32;
+    let package = BytecodePackage {
+        header,
+        code: ciphertext,
+    };
+    let code = ctx
+        .decrypt(&package.code, &package.header.nonce, &package.header.tag)
+        .expect("解密");
+
+    prof::reset();
+    execute_with_state(&code, &[]).expect("执行");
+
+    let nops = prof::count(aegis_vm::build_config::opcodes::special::NOP);
+    assert_eq!(prof::total_without_junk(), prof::total() - nops);
+}

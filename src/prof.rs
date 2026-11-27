@@ -39,6 +39,25 @@ pub fn dump() {
     }
 }
 
+/// 查某条 base opcode 的执行次数。
+pub fn count(base_opcode: u8) -> u64 {
+    HIST.with(|h| h.borrow()[base_opcode as usize])
+}
+
+/// 扣掉保护层注入的 NOP 之后的指令总数。
+///
+/// 为什么不能直接用 `total()` 比性能：`emit_op` 的 NOP 注入与死代码插入都以
+/// `bytecode.len()` 当熵，**任何字节长度变化都会全局重排注入点**，实测 1 字节改动能让
+/// 执行条数漂 15%。NOP 是唯一能在直方图里单独认出来的注入（有独立 opcode），
+/// 先把它扣掉，剩下的才是编译器自己发的指令——比较改动时用这个口径。
+///
+/// 局限要写清楚：死代码插入的 `PUSH_IMM8 x; DROP` 与真实指令无法区分，扣不掉；
+/// 所以它只能压低噪声，不能完全消除。判小改动仍应配合 ABBA 计时。
+pub fn total_without_junk() -> u64 {
+    let nop = count(crate::build_config::opcodes::special::NOP);
+    total().saturating_sub(nop)
+}
+
 /// 已统计的指令总数（= 直方图各项之和）。
 pub fn total() -> u64 {
     HIST.with(|h| h.borrow().iter().sum())

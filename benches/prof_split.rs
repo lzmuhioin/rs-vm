@@ -53,6 +53,15 @@ fn measure(name: &str, f: fn(u64) -> u64) {
             moves as f64 / total as f64 * 100.0,
             total as f64 / 100.0
         );
+        // 注入噪声是 bytecode.len() 的确定性函数，字节一变就整体重排；
+        // 扣掉有独立 opcode 的 NOP 之后再看，才比接近同一个口径。
+        let clean = aegis_vm::prof::total_without_junk();
+        println!(
+            "{: <12}   非NOP  {clean:>6}   （每次调用 {:.0} 条；NOP 注入 {} 条）",
+            "",
+            clean as f64 / 100.0,
+            aegis_vm::prof::count(aegis_vm::build_config::opcodes::special::NOP)
+        );
     }
     #[cfg(not(feature = "prof"))]
     println!("{name}: 需要 --features prof");
