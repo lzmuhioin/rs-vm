@@ -33,7 +33,7 @@ Status: draft — 在 `feat/stack-isa-opt` 上按里程碑推进寄存器分配�
 
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
-| M1 | 虚拟寄存器池 + 引用计数释放（只做算术/位运算表达式，不含分支与调用） | 该形态函数的 `prof` 栈搬运占比下降 ≥20 个百分点；863 项测试全绿 |
+| M1 | 虚拟寄存器池 + RAII 守卫释放（只做算术/位运算表达式，不含分支与调用） | 该形态函数的 `prof` 栈搬运占比下降 ≥20 个百分点；863 项测试全绿 |
 | M2 | 局部变量常驻寄存器（`compile_local` / 变量读写不再压栈），超出容量溢出到帧槽 | 同上，且 `real_world` ABBA 中位数改善可重复 |
 | M3 | 实参搬运与复合赋值走寄存器（`hoist_arg`、`compile_assign_op`） | 同上 |
 | M4 | 与混淆层对接：寄存器形态的指令必须接入指令替换，缺口不得扩大 | 缺口测试通过，且 `prof` 中 SWAP/NOT 仍覆盖新指令 |
@@ -49,10 +49,10 @@ Status: draft — 在 `feat/stack-isa-opt` 上按里程碑推进寄存器分配�
 
 第一轮（M1）的具体形态：
 
-1. 在 `Compiler` 上维护 `vreg_pool: SmallVec<u8>` 与每个虚拟寄存器的 `last_use`；
-2. `compile_expr` 求值统一改为「结果写入指定虚拟寄存器」，递归子表达式各自申请、用完归还；
-3. 二元运算 `a op b` 编译为：`dst = vreg(); compile_sub(a, dst); tmp = vreg(); compile_sub(b, tmp); emit_binop_reg_reg(dst, tmp); free(tmp)`；
-4. 只有池耗尽或跨语句存活时才回落到栈（先保证正确性，再谈减少回落）；
+1. 独立结构 `RegPool`（空闲表）+ `RegGuard`（`Drop` 归还、`into_inner()` 转移所有权）；
+2. `compile_expr` 求值统一改为「结果写入指定虚拟寄存器」，递归子表达式用嵌套块控制归还时机；
+3. 二元运算 `a op b`：`lhs` 守卫活在函数体，`rhs` 守卫活在子块（子块结束即归还），`dst` 用 `into_inner()` 转移出去；
+4. 跨语句存活的局部变量把 `Option<RegGuard>` 存进作用域表；池耗尽时回落到栈；
 5. 先只覆盖 `BinOp::Add/Sub/Mul/And/Or/Xor/Shl/Shr`，其它形态保持原路径，避免一次改太大。
 
 观测方式：`AEGIS_DUMP` 看发射形态是否真的变成寄存器形态；`prof` 看运行期栈搬运占比；
@@ -108,3 +108,43 @@ Status: draft — 在 `feat/stack-isa-opt` 上按里程碑推进寄存器分配�
    + 局部变量）**，M3、M4 不变。
 4. 验收口径相应收紧：合并后的 M1 要让 `mixed` 的搬运占比从 **50.2% 降到 30% 以下**，
    且 `locals_heavy` 从 60.7% 同步下降；只降其一不算达标。
+
+### 释放机制：用 `Drop`（RAII），不用引用计数
+
+初版写的是「虚拟寄存器池 + 引用计数释放」，**措辞与设计都不准确，已改为 RAII 守卫**。
+
+**为什么不需要引用计数**：一个虚拟寄存器的所有权在任一时刻是唯一的——要么属于某个正在编译的子表达式，
+要么经 `into_inner()` 转移给了调用者。唯一所有权下计数恒为 0 或 1，计数是冗余的。
+
+**为什么 RAII 优于手写计数**（这是决定性理由）：
+
+| 维度 | 手写引用计数 | RAII `Drop` |
+|---|---|---|
+| 忘记归还 | 池子泄漏，静默变慢 | 编译期不可能漏 |
+| **重复归还** | **同一寄存器被分配两次 → 算出错值** | 所有权唯一，不可能 |
+| 中途 `?` 早返回 | 每一处都要记得归还（`compile_expr` 有几十处） | 自动 |
+| panic 退出 | 池状态脏 | 自动归还 |
+
+第二行是致命的：重复归还产生的是 `gcd_step` 那类「不崩溃、只算错值」的事故，
+而 `compile_expr` 的早返回路径多到无法人工保证。
+
+**归还时机靠嵌套块控制**，不靠计数：
+
+```rust
+let mut lhs = self.alloc_guard()?;
+self.compile_into(&e.left, &mut lhs)?;
+{
+    let mut rhs = self.alloc_guard()?;   // 子块
+    self.compile_into(&e.right, &mut rhs)?;
+    let dst = self.alloc_guard()?;
+    self.emit_binop_reg_reg(lhs.reg, rhs.reg, dst.reg);
+    Ok(dst.into_inner())                 // 所有权转移，不被归还
+}                                        // ← rhs 在此归还
+```
+
+`(a+b)*(c+d)` 这类树的 `b`、`c`、`d` 都在用完的那一刻归还，与手写 `free()` 的时机完全一致。
+
+**唯一的技术难点**：跨语句存活的局部变量要把守卫存进作用域表，而表又在 `Compiler` 里——
+`RegGuard<'a>` 借用 `Compiler` 会形成自引用。解法是让守卫不持借用，而持有池的句柄：
+把 `RegPool` 拆成独立结构，守卫写成 `RegGuard { pool: Rc<RefCell<RegPool>>, id: u8 }`，
+`Drop` 里归还 id。这样守卫是 `'static`、可存进任何表，所有权语义完整。
