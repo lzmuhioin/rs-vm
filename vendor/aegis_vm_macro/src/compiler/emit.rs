@@ -141,17 +141,30 @@ fn mnemonic(op: u8) -> &'static str {
         0xF3 => "INPUT_LEN",
         0xFE => "HALT_ERR",
         0xFF => "HALT",
+        0xFD => "CONST_ENC",
+        0xFE => "LABEL",
         _ => "?",
     }
 }
-pub(crate) fn trace_dump() {
+pub(crate) fn trace_dump(func: &str) {
     if std::env::var_os("AEGIS_DUMP").is_none() {
         return;
     }
+    eprintln!("=== fn {func} ===");
     TRACE.with(|t| {
         let trace = t.borrow();
         let mut offset = 0usize;
         for (idx, (op, operands)) in trace.iter().enumerate() {
+            if *op == 0xFD {
+                // 伪指令：不占字节，故不计入偏移
+                eprintln!("  {idx:>3} {offset:>4}  -- CONST_ENC {operands:02x?}");
+                continue;
+            }
+            if *op == 0xFE {
+                let name = String::from_utf8_lossy(operands);
+                eprintln!("  {idx:>3} {offset:>4}  -- LABEL {name}");
+                continue;
+            }
             let hex: String = operands.iter().map(|b| format!("{b:02x}")).collect();
             eprintln!("  {idx:>3} {offset:>4}  {op:02X} {:<16} {hex}", mnemonic(*op));
             offset += 1 + operands.len();
@@ -165,6 +178,17 @@ pub(crate) fn trace_dump() {
 /// `bytecode.push(...)` 直写，不经过 emit_op，于是它们既不在轨迹里、也让轨迹里的偏移量
 /// 失去意义（偏移是记录的累加和，隐形字节不会计入）。缺了它们就无法做栈平衡核算——
 /// 实测正是靠这一点把「三路 if 的栈账」算错成 −1。
+/// 记录一次标签落点（伪指令，op = 0xFE，不占字节）。
+///
+/// 没有它就看不出 `JMP/JZ` 的落点：反汇编只有指令和相对偏移，
+/// 而「跳到哪一条」恰恰是判断控制流与栈平衡的关键。
+pub(crate) fn trace_label(name: &str) {
+    if std::env::var_os("AEGIS_DUMP").is_none() {
+        return;
+    }
+    TRACE.with(|t| t.borrow_mut().push((0xFE, name.as_bytes().to_vec())));
+}
+
 pub(crate) fn trace_raw(op: u8, operands: &[u8]) {
     if std::env::var_os("AEGIS_DUMP").is_none() {
         return;

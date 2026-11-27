@@ -299,9 +299,11 @@ impl ConstantSubstitution {
         if value <= 255 {
             bytecode.push(encode(stack::PUSH_IMM8));
             bytecode.push(value as u8);
+            crate::compiler::emit::trace_raw(stack::PUSH_IMM8, &[value as u8]);
         } else {
             bytecode.push(encode(stack::PUSH_IMM));
             bytecode.extend_from_slice(&value.to_le_bytes());
+            crate::compiler::emit::trace_raw(stack::PUSH_IMM, &value.to_le_bytes());
         }
     }
 }
