@@ -52,3 +52,18 @@ lto = "fat"       # En agresif link-time optimization
 codegen-units = 1 # Paralel derlemeyi kapat, boyutu küçült
 panic = "abort"   # Panic kodlarını at
 opt-level = "z"   # Boyut odaklı optimizasyon ("s" yerine "z" daha agresif)
+
+[[bench]]
+name = "vm_workloads"
+harness = false
+
+[[bench]]
+name = "real_world"
+harness = false
+
+[[bench]]
+name = "call_overhead"
+harness = false
+
+[profile.bench]
+opt-level = 3

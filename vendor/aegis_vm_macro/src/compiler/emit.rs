@@ -14,6 +14,12 @@ use crate::substitution::{
 impl Compiler {
     /// Emit an opcode (automatically encoded via shuffle table)
     pub(crate) fn emit_op(&mut self, base_opcode: u8) {
+        // 指令流诊断：AEGIS_DUMP=1 时把每条 base opcode 打到 stderr，供
+        // ./scripts/vm-opcode-census.sh 统计构成。注意是**编译期**读取，
+        // 改环境变量后必须 touch 本文件强制重展开。
+        if std::env::var_os("AEGIS_DUMP").is_some() {
+            eprintln!("OP {base_opcode:02X} at {}", self.bytecode.len());
+        }
         // Dead Code Insertion
         if self.subst.is_enabled() {
             let table = self.opcode_table.clone();
