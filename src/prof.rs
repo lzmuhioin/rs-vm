@@ -39,6 +39,20 @@ pub fn dump() {
     }
 }
 
+/// 统计「栈搬运类指令」的占比，返回 (搬运条数, 总条数)。
+///
+/// 搬运类 = PUSH_IMM(0x01) / PUSH_IMM8(0x02) / PUSH_REG(0x03) /
+/// POP_REG(0x04) / DUP(0x05) / DROP(0x07)。
+pub fn stack_share() -> (u64, u64) {
+    const MOVES: [usize; 6] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x07];
+    HIST.with(|h| {
+        let b = h.borrow();
+        let total: u64 = b.iter().sum();
+        let moves: u64 = MOVES.iter().map(|op| b[*op]).sum();
+        (moves, total)
+    })
+}
+
 /// 清空直方图（每个负载测前调用，避免互相污染）。
 pub fn reset() {
     HIST.with(|h| h.borrow_mut().fill(0));

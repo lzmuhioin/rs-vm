@@ -73,3 +73,7 @@ opt-level = 3
 [[bench]]
 name = "bottleneck"
 harness = false
+
+[[bench]]
+name = "prof_split"
+harness = false
