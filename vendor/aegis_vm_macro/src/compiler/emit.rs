@@ -11,6 +11,20 @@ use crate::substitution::{
     ControlFlowSubstitution,
 };
 
+/// 一条轨迹项。用枚举而不是「opcode + 伪 op 值」，是因为 `0xFD/0xFE` 本身就是真实
+/// opcode（HALT_ERR 等），拿它们当伪标记会把真指令渲染成 LABEL —— 又一个假象来源。
+#[derive(Clone)]
+pub(crate) enum TraceItem {
+    /// 真实指令：offset 是它在字节码里的**真实起始位置**（不是累加和）
+    Op { offset: usize, op: u8, operands: Vec<u8> },
+    /// 标签落点（不占字节）
+    Label { offset: usize, name: String },
+    /// 加密常量链：整段记一条，bytes 是被加密的原始值
+    EncConst { offset: usize, bytes: [u8; 8] },
+    /// 保护层注入（NOP / 死代码 / 不透明谓词）：占字节但没有源码语义
+    Injected { offset: usize, len: usize },
+}
+
 thread_local! {
     /// 本次编译发射的压栈、弹栈条数（线程局部：测试并行，全局变量会被兄弟用例污染）。
     static STACK_PUSHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -19,12 +33,42 @@ thread_local! {
     /// AEGIS_DUMP 用的指令流轨迹：(base opcode, 操作数字节)。
     /// 只记录**逻辑指令**——emit_op 里注入的 NOP / 死代码不经过 `emit`，
     /// 因此不会污染操作数，读出来的序列就是源码语义的那一份。
-    static TRACE: std::cell::RefCell<Vec<(u8, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TRACE: std::cell::RefCell<Vec<TraceItem>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// 轨迹已覆盖到的字节位置。任何新记录落在它之后，中间那段就是注入物。
+    static TRACE_END: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// 清空指令流轨迹；每个函数编译开始时由 `compile_function_full` 调用。
 pub(crate) fn trace_reset() {
     TRACE.with(|t| t.borrow_mut().clear());
+    TRACE_END.with(|c| c.set(0));
+}
+
+/// 所有轨迹写入的唯一收口点：先把「上一段结束 → 本次起点」之间的字节记成注入段。
+/// 只在 dump 打开时走。
+fn push_item(item: TraceItem) {
+    let start = match &item {
+        TraceItem::Op { offset, .. }
+        | TraceItem::Label { offset, .. }
+        | TraceItem::EncConst { offset, .. }
+        | TraceItem::Injected { offset, .. } => *offset,
+    };
+    TRACE.with(|t| {
+        let mut v = t.borrow_mut();
+        let end = TRACE_END.with(|c| c.get());
+        if start > end {
+            v.push(TraceItem::Injected { offset: end, len: start - end });
+        }
+        v.push(item);
+        let new_end = match v.last() {
+            Some(TraceItem::Op { offset, operands, .. }) => offset + 1 + operands.len(),
+            Some(TraceItem::Injected { offset, len }) => offset + len,
+            Some(TraceItem::Label { offset, .. }) => *offset,
+            Some(TraceItem::EncConst { offset, .. }) => *offset,
+            None => end,
+        };
+        TRACE_END.with(|c| c.set(new_end));
+    });
 }
 
 /// 把一条轨迹按「偏移 OP 操作数」打印出来（仅 AEGIS_DUMP=1 时输出）。
@@ -146,28 +190,56 @@ fn mnemonic(op: u8) -> &'static str {
         _ => "?",
     }
 }
-pub(crate) fn trace_dump(func: &str) {
+pub(crate) fn trace_dump(func: &str, total_len: usize) {
     if std::env::var_os("AEGIS_DUMP").is_none() {
         return;
     }
-    eprintln!("=== fn {func} ===");
+    eprintln!("=== fn {func} === 字节总数 {total_len}");
     TRACE.with(|t| {
         let trace = t.borrow();
-        let mut offset = 0usize;
-        for (idx, (op, operands)) in trace.iter().enumerate() {
-            if *op == 0xFD {
-                // 伪指令：不占字节，故不计入偏移
-                eprintln!("  {idx:>3} {offset:>4}  -- CONST_ENC {operands:02x?}");
-                continue;
+        // 覆盖度自检：真实偏移不连续，就说明有字节没被记录。
+        // 这是这套工具的**自我否认机制**——前三次误判都是「以为没有那条指令」，
+        // 有了这行输出，漏记会自己显形，不必再靠人去怀疑工具。
+        let mut prev_end = 0usize;
+        for (idx, item) in trace.iter().enumerate() {
+            match item {
+                TraceItem::Op { offset, op, operands } => {
+                    if *offset > prev_end {
+                        eprintln!(
+                            "  {idx:>3} {prev_end:>4}  -- [未记录 {} 字节]",
+                            offset - prev_end
+                        );
+                    }
+                    let hex: String = operands.iter().map(|b| format!("{b:02x}")).collect();
+                    eprintln!("  {idx:>3} {offset:>4}  {op:02X} {:<16} {hex}", mnemonic(*op));
+                    prev_end = offset + 1 + operands.len();
+                }
+                TraceItem::Label { offset, name } => {
+                    if *offset > prev_end {
+                        eprintln!(
+                            "  {idx:>3} {prev_end:>4}  -- [未记录 {} 字节]",
+                            offset - prev_end
+                        );
+                        prev_end = *offset;
+                    }
+                    eprintln!("  {idx:>3} {offset:>4}  -- LABEL {name}");
+                }
+                TraceItem::Injected { offset, len } => {
+                    eprintln!("  {idx:>3} {offset:>4}  -- [注入 {len} 字节]");
+                }
+                TraceItem::EncConst { offset, bytes } => {
+                    if *offset > prev_end {
+                        eprintln!(
+                            "  {idx:>3} {prev_end:>4}  -- [未记录 {} 字节]",
+                            offset - prev_end
+                        );
+                    }
+                    eprintln!("  {idx:>3} {offset:>4}  -- CONST_ENC {bytes:02x?}");
+                }
             }
-            if *op == 0xFE {
-                let name = String::from_utf8_lossy(operands);
-                eprintln!("  {idx:>3} {offset:>4}  -- LABEL {name}");
-                continue;
-            }
-            let hex: String = operands.iter().map(|b| format!("{b:02x}")).collect();
-            eprintln!("  {idx:>3} {offset:>4}  {op:02X} {:<16} {hex}", mnemonic(*op));
-            offset += 1 + operands.len();
+        }
+        if total_len > prev_end {
+            eprintln!("  --- {prev_end:>4}  -- [尾部未记录 {} 字节]", total_len - prev_end);
         }
     });
 }
@@ -182,18 +254,26 @@ pub(crate) fn trace_dump(func: &str) {
 ///
 /// 没有它就看不出 `JMP/JZ` 的落点：反汇编只有指令和相对偏移，
 /// 而「跳到哪一条」恰恰是判断控制流与栈平衡的关键。
-pub(crate) fn trace_label(name: &str) {
+pub(crate) fn trace_label(offset: usize, name: &str) {
     if std::env::var_os("AEGIS_DUMP").is_none() {
         return;
     }
-    TRACE.with(|t| t.borrow_mut().push((0xFE, name.as_bytes().to_vec())));
+    push_item(TraceItem::Label { offset, name: name.to_string() });
 }
 
-pub(crate) fn trace_raw(op: u8, operands: &[u8]) {
+pub(crate) fn trace_raw_at(offset: usize, op: u8, operands: &[u8]) {
     if std::env::var_os("AEGIS_DUMP").is_none() {
         return;
     }
-    TRACE.with(|t| t.borrow_mut().push((op, operands.to_vec())));
+    push_item(TraceItem::Op { offset, op, operands: operands.to_vec() });
+}
+
+/// 加密常量链：整段一条，不猜内部指令。
+pub(crate) fn trace_enc_const(offset: usize, value: u64) {
+    if std::env::var_os("AEGIS_DUMP").is_none() {
+        return;
+    }
+    push_item(TraceItem::EncConst { offset, bytes: value.to_le_bytes() });
 }
 
 /// 把操作数记到当前指令上。
@@ -202,8 +282,15 @@ fn trace_operand(bytes: &[u8]) {
         return;
     }
     TRACE.with(|t| {
-        if let Some(last) = t.borrow_mut().last_mut() {
-            last.1.extend_from_slice(bytes);
+        // 注意：整段只能有**一次**可变借用——中间再 borrow() 会 panic
+        // （RefCell 已有可变借用时不允许再借），实测会把整个宏展开炸掉。
+        let mut end = None;
+        if let Some(TraceItem::Op { offset, operands, .. }) = t.borrow_mut().last_mut() {
+            operands.extend_from_slice(bytes);
+            end = Some(*offset + 1 + operands.len());
+        }
+        if let Some(e) = end {
+            TRACE_END.with(|c| c.set(e));
         }
     });
 }
@@ -233,6 +320,8 @@ pub(crate) fn restore_stack_moves(snapshot: (u64, u64)) {
 impl Compiler {
     /// Emit an opcode (automatically encoded via shuffle table)
     pub(crate) fn emit_op(&mut self, base_opcode: u8) {
+        // 真实起点：在注入 NOP/死代码**之前**取，否则偏移会落在注入物上。
+        let trace_offset = self.bytecode.len();
         // 指令流诊断：AEGIS_DUMP=1 时把每条 base opcode 打到 stderr，供
         // ./scripts/vm-opcode-census.sh 统计构成。注意是**编译期**读取，
         // 改环境变量后必须 touch 本文件强制重展开。
@@ -261,9 +350,12 @@ impl Compiler {
         }
 
         if std::env::var_os("AEGIS_DUMP").is_some() {
-            TRACE.with(|t| t.borrow_mut().push((base_opcode, Vec::new())));
+            push_item(TraceItem::Op { offset: trace_offset, op: base_opcode, operands: Vec::new() });
         }
 
+        // 注入段（NOP / 死代码）没有源码语义，但确实占字节。
+        // 不记就会出现「未记录 N 字节」的缺口，让人怀疑漏了真指令；
+        // 记成「注入」后，剩下的缺口只可能是真正的未知——自检才有效力。
         let shuffled = self.opcode_table.encode(base_opcode);
         self.bytecode.push(shuffled);
     }

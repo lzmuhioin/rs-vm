@@ -301,9 +301,10 @@ impl Compiler {
 
     /// Mark current position as label
     pub(crate) fn mark_label(&mut self, name: &str) {
-        self.labels.insert(name.to_string(), self.pos());
+        let offset = self.pos();
+        self.labels.insert(name.to_string(), offset);
         // 落点同时进反汇编轨迹：不然只有相对偏移，看不出 JMP/JZ 跳到哪一条
-        crate::compiler::emit::trace_label(name);
+        crate::compiler::emit::trace_label(offset, name);
     }
 
     /// Register a function argument
@@ -665,7 +666,7 @@ pub fn compile_function_with_natives(func: &ItemFn, mba_enabled: bool, substitut
     // Extract native collector
     let native_collector = std::mem::take(&mut compiler.native_collector);
 
-    emit::trace_dump(&func.sig.ident.to_string());
+    emit::trace_dump(&func.sig.ident.to_string(), compiler.bytecode.len());
     Ok((bytecode, native_collector))
 }
 

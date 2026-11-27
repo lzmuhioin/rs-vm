@@ -296,14 +296,15 @@ impl ConstantSubstitution {
 
     /// Emit a constant value (helper)
     pub fn emit_value<F: Fn(u8) -> u8>(bytecode: &mut Vec<u8>, value: u64, encode: &F) {
+        let off = bytecode.len();
         if value <= 255 {
             bytecode.push(encode(stack::PUSH_IMM8));
             bytecode.push(value as u8);
-            crate::compiler::emit::trace_raw(stack::PUSH_IMM8, &[value as u8]);
+            crate::compiler::emit::trace_raw_at(off, stack::PUSH_IMM8, &[value as u8]);
         } else {
             bytecode.push(encode(stack::PUSH_IMM));
             bytecode.extend_from_slice(&value.to_le_bytes());
-            crate::compiler::emit::trace_raw(stack::PUSH_IMM, &value.to_le_bytes());
+            crate::compiler::emit::trace_raw_at(off, stack::PUSH_IMM, &value.to_le_bytes());
         }
     }
 }
@@ -324,19 +325,21 @@ impl ZeroSubstitution {
 
     /// Emit: PUSH X, DUP (then caller does emit_xor)
     pub fn emit_prefix<F: Fn(u8) -> u8>(bytecode: &mut Vec<u8>, x: u8, encode: &F) {
+        let off = bytecode.len();
         bytecode.push(encode(stack::PUSH_IMM8));
         bytecode.push(x);
         bytecode.push(encode(stack::DUP));
         // 直写字节不进 emit_op，必须手动补记，否则反汇编会少两条指令
-        crate::compiler::emit::trace_raw(stack::PUSH_IMM8, &[x]);
-        crate::compiler::emit::trace_raw(stack::DUP, &[]);
+        crate::compiler::emit::trace_raw_at(off, stack::PUSH_IMM8, &[x]);
+        crate::compiler::emit::trace_raw_at(off + 2, stack::DUP, &[]);
     }
 
     /// Emit standard zero
     pub fn emit_original<F: Fn(u8) -> u8>(bytecode: &mut Vec<u8>, encode: &F) {
+        let off = bytecode.len();
         bytecode.push(encode(stack::PUSH_IMM8));
         bytecode.push(0);
-        crate::compiler::emit::trace_raw(stack::PUSH_IMM8, &[0]);
+        crate::compiler::emit::trace_raw_at(off, stack::PUSH_IMM8, &[0]);
     }
 }
 

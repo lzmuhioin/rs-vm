@@ -44,6 +44,10 @@ pub struct FreeBlock {
 /// Maximum stack size (entries, not bytes)
 pub const MAX_STACK_SIZE: usize = 1024;
 
+/// 栈高水位（仅 debug 构建用于诊断，见 `push` 里的探针）。
+#[cfg(debug_assertions)]
+static PROBE_MAX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Maximum instructions per execution (prevent infinite loops)
 pub const MAX_INSTRUCTIONS: u64 = 1_000_000;
 
@@ -348,6 +352,23 @@ impl<'a> VmState<'a> {
             return Err(VmError::StackOverflow);
         }
         self.stack.push(value);
+        // 栈高水位探针（仅 debug 构建）：`AEGIS_STKPROBE=1` 时每次刷新高水位就打一行
+        // 「深度 + 指令位置」。为什么需要它：靠读反汇编判断栈平衡，我已经错了三次
+        // ——那工具漏记直写字节，结论跟着错。运行时计数不会骗人。
+        // release 下整段被 cfg 编掉，不留运行期开销。
+        #[cfg(debug_assertions)]
+        {
+            let depth = self.stack.len();
+            if depth > PROBE_MAX.load(std::sync::atomic::Ordering::Relaxed) {
+                PROBE_MAX.store(depth, std::sync::atomic::Ordering::Relaxed);
+                if std::env::var_os("AEGIS_STKPROBE").is_some() {
+                    eprintln!(
+                        "STKPROBE depth={depth} ip={} instr={}",
+                        self.ip, self.instruction_count
+                    );
+                }
+            }
+        }
         Ok(())
     }
 

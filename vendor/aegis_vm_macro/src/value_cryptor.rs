@@ -248,10 +248,11 @@ impl ValueCryptor {
         bytecode: &mut Vec<u8>,
         encode: &F,
     ) {
+        let enc_off = bytecode.len();
         // 加密常量的发射会写一长串指令，逐条记意义不大：
         // 整段记成一条伪指令 0xFD（值 8 字节），反汇编里显示 CONST_ENC <hex>，
         // 至少让「这里压了一个常量」不会凭空消失（此前它完全是隐形的）。
-        crate::compiler::emit::trace_raw(0xFD, &value.to_le_bytes());
+        crate::compiler::emit::trace_enc_const(enc_off, value);
         // Generate new chain for this value
         self.generate_chain();
 
