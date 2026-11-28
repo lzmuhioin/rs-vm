@@ -105,6 +105,24 @@ fn f_loop_only(n: u64) -> u64 {
     s
 }
 
+/// G：与 B 只差「条件右值」。B 用 `== 0`（走 emit_zero 的零值构造），
+/// G 用 `== 1`（走普通常量发射）。两者栈深若一个涨一个不涨，
+/// 元凶就是 `emit_zero()`。
+#[vm_protect]
+fn g_eq_one(n: u64) -> u64 {
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        if i & 3 == 1 {
+            s = s + i;
+        } else {
+            s = s + 1;
+        }
+        i = i + 1;
+    }
+    s
+}
+
 const N: u64 = 300;
 
 #[test]
@@ -183,4 +201,17 @@ fn t_f_loop_only() {
 #[test]
 fn t_small_trace() {
     let _ = b_two_way(4);
+}
+
+#[test]
+fn t_g_eq_one() {
+    let expect = {
+        let (mut s, mut i) = (0u64, 0u64);
+        while i < N {
+            if i & 3 == 1 { s += i } else { s += 1 }
+            i += 1;
+        }
+        s
+    };
+    assert_eq!(g_eq_one(N), expect);
 }

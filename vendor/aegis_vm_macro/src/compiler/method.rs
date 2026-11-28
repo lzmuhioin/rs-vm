@@ -51,6 +51,10 @@ impl Compiler {
                 // Check if length is 0
                 self.emit_zero();
                 self.emit_xor();  // len ^ 0 = len, sets ZF if len == 0
+                // 异或结果只用来置 ZF，本身是死值（布尔值由下面的 PUSH 1 / PUSH 0 给）。
+                // 不丢就会给每次 `is_empty()` 留一格栈——和 `compile_eq` 是同一类错误：
+                // 放进循环体里每转一圈就涨一格，够多圈直接 E03 StackOverflow。
+                self.emit_drop();
 
                 // Convert to boolean: 1 if zero, 0 otherwise
                 let else_label = self.unique_label("is_empty_else");

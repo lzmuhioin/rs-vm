@@ -9,7 +9,23 @@ use crate::opcodes::control;
 
 impl Compiler {
     /// Compile any expression (result pushed to stack)
+    ///
+    /// 调用约定：净 +1（正好给调用方留一个值）。编译期栈平衡断言打开时，
+    /// 这里顺带核对这条约定——见 `compiler/stackcheck.rs` 的说明。
     pub(crate) fn compile_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
+        let before = self.stack_depth;
+        let was_reachable = self.stack_reachable;
+        self.compile_expr_inner(expr)?;
+        // 只在「这条路径会被执行到」时查：`return` / `break` 之后的线性代码是死代码，
+        // 栈账从跳转那一刻起就没有意义了。
+        if self.stack_check && was_reachable && self.stack_reachable {
+            self.stack_check_expr(expr, before);
+        }
+        Ok(())
+    }
+
+    /// 真正的表达式分发（`compile_expr` 只负责外面的栈账核对）。
+    fn compile_expr_inner(&mut self, expr: &Expr) -> Result<(), CompileError> {
         match expr {
             // =========================================================
             // Literals (int, bool, string, char, byte)
@@ -353,6 +369,8 @@ impl Compiler {
                 // This prevents memory leaks from early returns
                 self.emit_scope_cleanup(1);
                 self.emit_op(crate::opcodes::exec::HALT);
+                // HALT 之后不会再有指令执行：栈账从这里断线（栈平衡断言用）
+                self.stack_end_path();
             }
 
             // =========================================================
@@ -535,6 +553,14 @@ impl Compiler {
     fn compile_eq(&mut self) -> Result<(), CompileError> {
         // XOR: if equal, result is 0
         self.emit_xor();
+        // XOR 只为了置 ZF（a^b == 0 即相等），它压回来的那个异或结果是个死值，必须丢掉。
+        //
+        // 为什么这里非要 DROP：不丢就会给每个 `==` 在栈上留下多一格，放进 while 循环体
+        // 就变成「每转一圈涨一格」——实测 n=300 时栈深 303、n=1000 直接 E03 StackOverflow。
+        // 这个值没有人读（分支值由下面的 PUSH 1 / PUSH 0 负责），删掉它不改任何语义。
+        // DROP 不动标志位，所以紧接着的 JNZ 照旧看 XOR 置的 ZF（注入层的假分支与 NOP
+        // 也不动标志位，这一点在 substitution.rs 里是硬约束）。
+        self.emit_drop();
 
         let else_label = self.unique_label("eq_else");
         let end_label = self.unique_label("eq_end");
@@ -552,6 +578,8 @@ impl Compiler {
     /// Compile inequality: a != b
     fn compile_ne(&mut self) -> Result<(), CompileError> {
         self.emit_xor();
+        // 同 compile_eq：异或结果只用来置 ZF，本身是死值，不丢就每个 `!=` 漏一格栈。
+        self.emit_drop();
 
         let else_label = self.unique_label("ne_else");
         let end_label = self.unique_label("ne_end");
@@ -1142,12 +1170,18 @@ impl Compiler {
     pub(crate) fn try_expr_to_reg(&mut self, expr: &Expr, dst: u8) -> Option<()> {
         let mark = self.bytecode.len();
         let snapshot = crate::compiler::emit::stack_moves_split();
+        // 栈账也要跟着回滚：字节码都截掉了，深度却留着「已经压过的」那几格，
+        // 后面的比对就会拿一个根本没发射的深度去比。
+        let saved_depth = self.stack_depth;
+        let saved_reachable = self.stack_reachable;
         let saved_disabled = self.reg_fastpath_disabled;
         let result = self.compile_expr_to_reg(expr, dst);
         let after = crate::compiler::emit::stack_moves_split();
         if result.is_err() || after != snapshot {
             self.bytecode.truncate(mark);
             crate::compiler::emit::restore_stack_moves(snapshot);
+            self.stack_depth = saved_depth;
+            self.stack_reachable = saved_reachable;
             self.reg_fastpath_disabled = saved_disabled;
             return None;
         }

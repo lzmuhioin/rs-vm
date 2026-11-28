@@ -364,6 +364,13 @@ impl Compiler {
         // 记成「注入」后，剩下的缺口只可能是真正的未知——自检才有效力。
         let shuffled = self.opcode_table.encode(base_opcode);
         self.bytecode.push(shuffled);
+
+        // 编译期栈平衡断言：逻辑指令的唯一出口在这里，栈账也记在这里
+        // （表在 compiler/stackcheck.rs，逐条对着 src/handlers 的实现核过）。
+        // 为什么不在每个 emit_* 助手里各写一行：助手大多是「一条 emit_op + 操作数」，
+        // 逐个加会在新助手出现时漏记，而这里既不会漏也不会重复计。
+        let delta = super::stackcheck::opcode_stack_effect(base_opcode);
+        self.stack_effect(delta);
     }
 
     /// Emit a single byte
@@ -394,10 +401,20 @@ impl Compiler {
             );
         }
 
+        // 栈平衡断言：把「跳过去时栈上该有几格」记下来。放在发指令之前，
+        // 偏移就是这条跳转自身的位置（跳转本身不动栈，前后深度一样）。
+        self.stack_expect_at(label);
+
         self.emit_op(opcode);
         let fixup_pos = self.pos();
         self.emit_u16(0); // Placeholder
         self.fixups.push((fixup_pos, label.to_string()));
+
+        // 无条件跳转之后的那段线性代码不会被执行，栈账从这儿断线，
+        // 到下一个标签落点才重新对齐（否则 if 的两个分支会被算成同一条路径）。
+        if opcode == control::JMP {
+            self.stack_end_path();
+        }
     }
 
     /// Emit fused loop condition: `CMP_REG_REG_JGE <a> <b> <i16 offset>`
@@ -405,6 +422,7 @@ impl Compiler {
     /// Equivalent to `PUSH_REG a; PUSH_REG b; CMP; DROP; DROP; JGE label`
     /// (stack-neutral, same flags) in a single dispatch.
     pub(crate) fn emit_cmp_reg_reg_jge(&mut self, a: u8, b: u8, label: &str) {
+        self.stack_expect_at(label);
         self.emit_op(control::CMP_REG_REG_JGE);
         self.emit(a);
         self.emit(b);
@@ -415,6 +433,7 @@ impl Compiler {
 
     /// Emit fused compare-and-branch: `CMP_REG_REG_JCC <a> <b> <cond> <i16 offset>`
     pub(crate) fn emit_cmp_reg_reg_jcc(&mut self, a: u8, b: u8, cond: u8, label: &str) {
+        self.stack_expect_at(label);
         self.emit_op(control::CMP_REG_REG_JCC);
         self.emit(a);
         self.emit(b);
@@ -455,6 +474,8 @@ impl Compiler {
             let variant = AddSubstitution::choose(&mut self.subst);
             variant.emit(&mut self.bytecode, &encode);
         }
+        // 直写字节：三个变体（ADD / a−(−b) / ~(~a−b)）都是「弹 2 压 1」，净 −1
+        self.stack_effect(-1);
     }
 
     /// Emit SUB instruction
@@ -468,6 +489,8 @@ impl Compiler {
             let variant = SubSubstitution::choose(&mut self.subst);
             variant.emit(&mut self.bytecode, &encode);
         }
+        // 同上：变体全部等价于「弹 2 压 1」
+        self.stack_effect(-1);
     }
 
     /// Emit MUL instruction
@@ -500,6 +523,8 @@ impl Compiler {
         if self.mba_enabled {
             let table = self.opcode_table.clone();
             self.mba.emit_xor(&mut self.bytecode, |op| table.encode(op));
+            // MBA 变体是直写字节（(x|y)&~(x&y) / (x&y)… 全是弹 2 压 1 的组合），净 −1
+            self.stack_effect(-1);
         } else {
             self.emit_op(arithmetic::XOR);
         }
@@ -520,6 +545,8 @@ impl Compiler {
         } else {
             AndSubstitution::emit_original(&mut self.bytecode, &encode);
         }
+        // 直写段：SWAP(0) + OR/AND(−1) + 三条 NOT(0)，净 −1；emit_not 自己已记 0
+        self.stack_effect(-1);
     }
 
     /// Emit OR instruction
@@ -537,6 +564,8 @@ impl Compiler {
         } else {
             OrSubstitution::emit_original(&mut self.bytecode, &encode);
         }
+        // 同 emit_and：直写段的净效果是「弹 2 压 1」
+        self.stack_effect(-1);
     }
 
     /// Emit NOT instruction
@@ -546,6 +575,8 @@ impl Compiler {
         let variant = NotSubstitution::choose(&mut self.subst);
         let needs_xor = variant.emit(&mut self.bytecode, &encode);
         if needs_xor {
+            // 直写了一条 PUSH_IMM（−1 的掩码常量），随后的 XOR 再 −1：合计净 0
+            self.stack_effect(1);
             self.emit_xor();
         }
     }
@@ -577,8 +608,12 @@ impl Compiler {
         let variant = IncSubstitution::choose(&mut self.subst);
         let (needs_add, needs_sub) = variant.emit(&mut self.bytecode, &encode);
         if needs_add {
+            // 直写了一条 PUSH_IMM8 1，随后的 ADD 再 −1：净 0（INC 本来就是「弹 1 压 1」）
+            self.stack_effect(1);
             self.emit_add();
         } else if needs_sub {
+            // 直写 PUSH_IMM −1，随后的 SUB 再 −1：同样净 0
+            self.stack_effect(1);
             self.emit_sub();
         }
     }
@@ -594,13 +629,18 @@ impl Compiler {
 
         if self.value_cryptor_enabled {
             self.value_cryptor.emit_encrypted_value(value, &mut self.bytecode, &encode);
+            // 直写段：先压加密常量（+1），再逐条解密指令——每条都是「压常量 + 二元运算」，净 0
+            self.stack_effect(1);
         } else if ConstantSubstitution::should_split(&mut self.subst, value) {
             let (a, b) = ConstantSubstitution::split(&mut self.subst, value);
             ConstantSubstitution::emit_value(&mut self.bytecode, a, &encode);
+            self.stack_effect(1); // 直写 PUSH
             ConstantSubstitution::emit_value(&mut self.bytecode, b, &encode);
-            self.emit_add();
+            self.stack_effect(1); // 直写 PUSH
+            self.emit_add(); // 自己记 −1：合计净 +1，和单条常量等价
         } else {
             ConstantSubstitution::emit_value(&mut self.bytecode, value, &encode);
+            self.stack_effect(1);
         }
     }
 
@@ -611,9 +651,12 @@ impl Compiler {
         if ZeroSubstitution::should_obfuscate(&mut self.subst) {
             let x = ZeroSubstitution::get_xor_value(&mut self.subst);
             ZeroSubstitution::emit_prefix(&mut self.bytecode, x, &encode);
+            // 直写段：PUSH_IMM8 x + DUP = +2，随后的 XOR −1 → 净 +1，与 emit_original 等价
+            self.stack_effect(2);
             self.emit_xor();
         } else {
             ZeroSubstitution::emit_original(&mut self.bytecode, &encode);
+            self.stack_effect(1); // 直写 PUSH_IMM8 0
         }
     }
 
@@ -844,6 +887,9 @@ impl Compiler {
         self.emit_op(native::NATIVE_CALL);
         self.emit(func_index);
         self.emit(arg_count);
+        // 栈账：弹掉 arg_count 个实参，压回 1 个返回值。参数个数是操作数，
+        // opcode 那张表看不见，所以在这里补记（表里 NATIVE_CALL 记的是 0）。
+        self.stack_effect(1 - arg_count as i32);
     }
 
     // =========================================================================

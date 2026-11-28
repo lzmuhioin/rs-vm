@@ -14,6 +14,7 @@
 //! - cast.rs: Type cast compilation (as i32, as u8, etc.)
 
 pub(crate) mod emit;
+mod stackcheck;
 mod regs;
 mod literal;
 mod expr;
@@ -225,6 +226,19 @@ pub struct Compiler {
     pub(crate) opaque_predicates_enabled: bool,
     /// Native call collector for external function calls
     pub(crate) native_collector: NativeCallCollector,
+    /// 编译期栈平衡断言：当前线性位置的栈深（相对函数入口，压为正、弹为负）。
+    pub(crate) stack_depth: i32,
+    /// 标签名 → 该落点应有的栈深（跳转发射时登记，落点时比对）。
+    pub(crate) label_depth: BTreeMap<String, i32>,
+    /// 标签名 → 首次落点的字节码偏移（报错时用来说清位置）。
+    pub(crate) label_at: BTreeMap<String, usize>,
+    /// 当前线性位置是否真的能被走到：无条件跳转/停机之后为 false，到下一个标签才恢复。
+    /// 没有这一位就会把 `if` 的两个分支当成同一条路径，满屏假警报。
+    pub(crate) stack_reachable: bool,
+    /// 记下的第一处栈失衡；`stack_check` 打开时在函数编译末尾报成编译错误。
+    pub(crate) stack_fault: Option<String>,
+    /// 是否把栈失衡报成编译错误（`AEGIS_STKCHECK=1`，见 `compiler/stackcheck.rs`）。
+    pub(crate) stack_check: bool,
 }
 
 impl Compiler {
@@ -272,6 +286,12 @@ impl Compiler {
             // Opaque predicates enabled for standard+ protection (when substitution is on)
             opaque_predicates_enabled: substitution_enabled,
             native_collector: NativeCallCollector::new(),
+            stack_depth: 0,
+            label_depth: BTreeMap::new(),
+            label_at: BTreeMap::new(),
+            stack_reachable: true,
+            stack_fault: None,
+            stack_check: false,
         }
     }
 
@@ -305,6 +325,8 @@ impl Compiler {
         self.labels.insert(name.to_string(), offset);
         // 落点同时进反汇编轨迹：不然只有相对偏移，看不出 JMP/JZ 跳到哪一条
         crate::compiler::emit::trace_label(offset, name);
+        // 编译期栈平衡断言：跳转登记过期望深度的，落点时比对（见 compiler/stackcheck.rs）
+        self.stack_land_label(name);
     }
 
     /// Register a function argument
@@ -641,9 +663,34 @@ pub struct CompileResult {
 
 /// Compile a function with configurable options, returning native call info
 pub fn compile_function_with_natives(func: &ItemFn, mba_enabled: bool, substitution_enabled: bool) -> Result<(Vec<u8>, NativeCallCollector), CompileError> {
+    compile_function_checked(
+        func,
+        mba_enabled,
+        substitution_enabled,
+        stack_check_from_env(),
+    )
+}
+
+/// 是否把编译期栈失衡报成编译错误：`AEGIS_STKCHECK=1` 时打开（见 `compiler/stackcheck.rs`）。
+///
+/// 为什么是环境变量而不是 feature：诊断要能对着**某一个**测试文件单独开
+/// （`AEGIS_STKCHECK=1 cargo test --test xxx`），feature 做不到按次开关。
+fn stack_check_from_env() -> bool {
+    std::env::var_os("AEGIS_STKCHECK").is_some()
+}
+
+/// 编译一个函数，显式指定是否做编译期栈平衡断言（测试用这个入口，不依赖环境变量）。
+pub(crate) fn compile_function_checked(
+    func: &ItemFn,
+    mba_enabled: bool,
+    substitution_enabled: bool,
+    stack_check: bool,
+) -> Result<(Vec<u8>, NativeCallCollector), CompileError> {
     // AEGIS_DUMP=1 时记录逻辑指令流（含操作数），函数返回前打印。
     emit::trace_reset();
     let mut compiler = Compiler::with_options(mba_enabled, substitution_enabled);
+    compiler.stack_check = stack_check;
+    let func_name = func.sig.ident.to_string();
 
     // Register function arguments
     for arg in &func.sig.inputs {
@@ -660,6 +707,12 @@ pub fn compile_function_with_natives(func: &ItemFn, mba_enabled: bool, substitut
 
     // Compile function body
     compiler.compile_block(&func.block)?;
+
+    // 调用约定：函数体编译完，栈上应当正好留 1 个返回值。
+    // 这一步必须放在 finalize() 之前——finalize 会在末尾补一条 HALT，
+    // 而 HALT 把返回值弹走（净 −1），补上之后就再也看不出原来的深度了。
+    compiler.stack_expect_return_value();
+    compiler.stack_finish(&func_name)?;
 
     let bytecode = compiler.finalize()?;
 

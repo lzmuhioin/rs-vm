@@ -88,7 +88,6 @@ fn native_if_only(n: u64) -> u64 {
 // 分不清是谁漏的（上一版就栽在这上面）。
 
 #[test]
-#[ignore = "已知 bug：while 循环体里的三路 if/else if/else 每轮泄漏一格栈，跑到 E03 StackOverflow；\n    // 两路 if/else 与 if-only 正常。反汇编对照见提交说明"]
 fn if_else_shape() {
     for n in [10u64, 100, 1000] {
         assert_eq!(with_if_else(n), native_if_else(n), "if/else n={n}");
@@ -96,7 +95,6 @@ fn if_else_shape() {
 }
 
 #[test]
-#[ignore = "已知 bug：while 循环体里的三路 if/else if/else 每轮泄漏一格栈，跑到 E03 StackOverflow；\n    // 两路 if/else 与 if-only 正常。反汇编对照见提交说明"]
 fn if_elseif_else_shape() {
     for n in [10u64, 100, 1000] {
         assert_eq!(
@@ -108,7 +106,6 @@ fn if_elseif_else_shape() {
 }
 
 #[test]
-#[ignore = "已知 bug：while 循环体里的三路 if/else if/else 每轮泄漏一格栈，跑到 E03 StackOverflow；\n    // 两路 if/else 与 if-only 正常。反汇编对照见提交说明"]
 fn if_only_shape() {
     for n in [10u64, 100, 1000] {
         assert_eq!(with_if_only(n), native_if_only(n), "if-only n={n}");
