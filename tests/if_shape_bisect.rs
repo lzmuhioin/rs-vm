@@ -93,6 +93,18 @@ fn e_else_if_no_else(n: u64) -> u64 {
     s
 }
 
+/// F：对照组——循环体里**没有任何 if**。用来判定泄漏是来自循环本身还是来自 if。
+#[vm_protect]
+fn f_loop_only(n: u64) -> u64 {
+    let mut s = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        s = s + i;
+        i = i + 1;
+    }
+    s
+}
+
 const N: u64 = 300;
 
 #[test]
@@ -154,4 +166,14 @@ fn t_e_else_if_no_else() {
         }
         s
     });
+}
+
+#[test]
+fn t_f_loop_only() {
+    let expect = {
+        let (mut s, mut i) = (0u64, 0u64);
+        while i < N { s += i; i += 1; }
+        s
+    };
+    assert_eq!(f_loop_only(N), expect);
 }

@@ -634,6 +634,15 @@ impl XorSubstitution {
 /// Dead code insertion patterns
 /// These emit sequences that have no net effect on the stack/state
 /// IMPORTANT: Only stack-safe patterns that don't require existing stack elements
+/// 注入层总开关：`AEGIS_NOJUNK=1` 时关掉 NOP / 死代码 / 不透明谓词。
+///
+/// 用途只有一个——**测栈平衡**。注入物是否成对压弹，静态读不出来（读错过三次），
+/// 只能关掉注入比栈深：关掉后栈深不再随循环次数增长，说明元凶在注入层。
+/// 编译期读取，改环境变量后必须 touch 源码强制重展开。
+pub(crate) fn junk_disabled() -> bool {
+    std::env::var_os("AEGIS_NOJUNK").is_some()
+}
+
 pub struct DeadCodeInsertion;
 
 impl DeadCodeInsertion {
@@ -657,6 +666,9 @@ impl DeadCodeInsertion {
     /// This doesn't use the substitution RNG, ensuring deterministic output
     /// across different protection levels
     pub fn emit_deterministic<F: Fn(u8) -> u8>(position: usize, bytecode: &mut Vec<u8>, encode: &F) {
+        if junk_disabled() {
+            return;
+        }
         // Use position-based entropy (not RNG)
         let entropy = (position as u64)
             .wrapping_mul(0x9E3779B97F4A7C15)
@@ -692,7 +704,9 @@ impl DeadCodeInsertion {
             }
             _ => {
                 // Simple NOP
+                if !junk_disabled() {
                 bytecode.push(encode(crate::opcodes::special::NOP));
+                }
             }
         }
     }
@@ -1012,7 +1026,9 @@ impl ControlFlowSubstitution {
                 // Pattern 5: Multiple NOPs (simplest)
                 let nop_count = (subst.next_rand() % 3) as usize + 1;
                 for _ in 0..nop_count {
+                    if !junk_disabled() {
                     bytecode.push(encode(special::NOP));
+                    }
                 }
             }
         }

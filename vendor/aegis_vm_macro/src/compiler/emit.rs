@@ -344,7 +344,7 @@ impl Compiler {
             .wrapping_mul(0x5deece66d)
             .wrapping_add(0xb);
 
-        if (entropy % 100) < 10 {
+        if !crate::substitution::junk_disabled() && (entropy % 100) < 10 {
             let nop_shuffled = self.opcode_table.encode(special::NOP);
             self.bytecode.push(nop_shuffled);
         }
@@ -375,7 +375,10 @@ impl Compiler {
     /// Emit jump with fixup
     pub(crate) fn emit_jump(&mut self, opcode: u8, label: &str) {
         // Opaque predicate injection (~15% chance)
-        if self.opaque_predicates_enabled && self.should_inject_opaque() {
+        if !crate::substitution::junk_disabled()
+            && self.opaque_predicates_enabled
+            && self.should_inject_opaque()
+        {
             let table = self.opcode_table.clone();
             let encode = |op: u8| table.encode(op);
             ControlFlowSubstitution::emit_fake_conditional(
