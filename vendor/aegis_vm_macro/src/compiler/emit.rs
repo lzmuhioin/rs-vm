@@ -190,11 +190,15 @@ fn mnemonic(op: u8) -> &'static str {
         _ => "?",
     }
 }
-pub(crate) fn trace_dump(func: &str, total_len: usize) {
+pub(crate) fn trace_dump(func: &str, shift: usize) {
     if std::env::var_os("AEGIS_DUMP").is_none() {
         return;
     }
-    eprintln!("=== fn {func} === 字节总数 {total_len}");
+    // shift = 多态 pass 在函数**开头**插入的字节数。它后面的内容原样复制，
+    // 所以所有偏移整体 +shift 就是最终镜像里的真实位置。
+    // 之前 dump 的是「发射阶段」的中间产物，落点与实际执行差 shift 字节，
+    // 静态栈平衡分析因此永远对不上运行时——这是那串误判的总根源。
+    eprintln!("=== fn {func} === 前缀 junk {shift} 字节");
     TRACE.with(|t| {
         let trace = t.borrow();
         // 覆盖度自检：真实偏移不连续，就说明有字节没被记录。
@@ -204,6 +208,7 @@ pub(crate) fn trace_dump(func: &str, total_len: usize) {
         for (idx, item) in trace.iter().enumerate() {
             match item {
                 TraceItem::Op { offset, op, operands } => {
+                    let offset = &(*offset + shift);
                     if *offset > prev_end {
                         eprintln!(
                             "  {idx:>3} {prev_end:>4}  -- [未记录 {} 字节]",
@@ -215,6 +220,7 @@ pub(crate) fn trace_dump(func: &str, total_len: usize) {
                     prev_end = offset + 1 + operands.len();
                 }
                 TraceItem::Label { offset, name } => {
+                    let offset = &(*offset + shift);
                     if *offset > prev_end {
                         eprintln!(
                             "  {idx:>3} {prev_end:>4}  -- [未记录 {} 字节]",
@@ -225,9 +231,11 @@ pub(crate) fn trace_dump(func: &str, total_len: usize) {
                     eprintln!("  {idx:>3} {offset:>4}  -- LABEL {name}");
                 }
                 TraceItem::Injected { offset, len } => {
+                    let offset = &(*offset + shift);
                     eprintln!("  {idx:>3} {offset:>4}  -- [注入 {len} 字节]");
                 }
                 TraceItem::EncConst { offset, bytes } => {
+                    let offset = &(*offset + shift);
                     if *offset > prev_end {
                         eprintln!(
                             "  {idx:>3} {prev_end:>4}  -- [未记录 {} 字节]",
@@ -238,9 +246,7 @@ pub(crate) fn trace_dump(func: &str, total_len: usize) {
                 }
             }
         }
-        if total_len > prev_end {
-            eprintln!("  --- {prev_end:>4}  -- [尾部未记录 {} 字节]", total_len - prev_end);
-        }
+        let _ = prev_end;
     });
 }
 

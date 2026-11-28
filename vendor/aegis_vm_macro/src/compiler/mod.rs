@@ -666,7 +666,6 @@ pub fn compile_function_with_natives(func: &ItemFn, mba_enabled: bool, substitut
     // Extract native collector
     let native_collector = std::mem::take(&mut compiler.native_collector);
 
-    emit::trace_dump(&func.sig.ident.to_string(), compiler.bytecode.len());
     Ok((bytecode, native_collector))
 }
 

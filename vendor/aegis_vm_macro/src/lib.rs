@@ -216,6 +216,21 @@ pub fn vm_protect(attr: TokenStream, item: TokenStream) -> TokenStream {
     // TODO: Implement jump offset recalculation to enable anti_analysis checks.
     let fn_name_str = fn_name.to_string();
     let bytecode = polymorphic::apply_polymorphism(&raw_bytecode, &fn_name_str, poly_level);
+    // 诊断：多态变换发生在 trace_dump **之后**，它改了多少字节必须显式看见，
+    // 否则反汇编说的和实际执行的是两份东西（实测栈平衡分析就因此一直对不上）。
+    if std::env::var_os("AEGIS_DUMP").is_some() {
+        // 多态是在函数开头插前缀、后面原样复制。先验证「原样」这一步真的成立：
+        // 只要成立，整份反汇编就能用「整体平移 shift」对齐到最终镜像。
+        let shift = bytecode.len() - raw_bytecode.len();
+        let suffix_unchanged = shift <= bytecode.len() && bytecode[shift..] == raw_bytecode[..];
+        eprintln!(
+            "POLY {fn_name_str}: {} -> {} bytes (level {poly_level:?}) 前缀={shift} 后缀原样={suffix_unchanged}",
+            raw_bytecode.len(),
+            bytecode.len()
+        );
+        // dump 必须在这里做：此时才是运行时真正执行的那份字节码
+        compiler::emit::trace_dump(&fn_name_str, if suffix_unchanged { shift } else { 0 });
+    }
 
     // Generate input preparation from function args
     let input_prep = generate_input_prep(fn_inputs);
