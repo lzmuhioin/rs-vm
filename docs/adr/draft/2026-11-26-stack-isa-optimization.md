@@ -1,6 +1,8 @@
 # 决策记录: 栈式 ISA 效率优化试验（从 main 分叉，独立于寄存器 ISA）
 
-Status: draft — 在 `feat/stack-isa-opt`（自 `main` `b17c9a9` 分叉）上做栈式 ISA 的效率优化试验，先立测量基线再动手；寄存器 ISA 分支保留为已验证的备选。
+Status: draft — 试验已在 `feat/stack-isa-opt`（自 `main` `b17c9a9` 分叉）完成并已并入 `main`；
+结果、实测数字与遗留项见 [accepted/2026-11-28-stack-isa-opt-wrap-up.md](../accepted/2026-11-28-stack-isa-opt-wrap-up.md)。
+寄存器 ISA 分支保留为已验证的对照与备选。
 
 ## 问题
 
