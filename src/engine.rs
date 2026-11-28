@@ -44,7 +44,21 @@ pub fn run_with_native_table(state: &mut VmState) -> VmResult<()> {
         }
 
         // Fetch opcode
+        // release 下不定义，避免 clippy 报「未使用变量」
+        #[cfg(debug_assertions)]
+        let trace_ip = state.ip;
         let opcode = state.read_u8()?;
+        // 全指令跟踪（仅 debug）：`AEGIS_TRACEALL=1` 时把每条**已执行**指令和当时的栈深打出来。
+        // 为什么不只用环形缓冲：环缓冲只记压栈点，看不出「哪一条之后深度不降」。
+        // 小 n（4~6）时整段执行流只有几十条，直接读即可，不需要任何关于语义的假设。
+        #[cfg(debug_assertions)]
+        if std::env::var_os("AEGIS_TRACEALL").is_some() {
+            eprintln!("TRACE ip={trace_ip:>4} op={opcode:02X} sp={}", state.stack.len());
+        }
+
+        // 动态剖析：只统计，不改执行路径。
+        #[cfg(feature = "prof")]
+        crate::prof::tally(crate::build_config::OPCODE_DECODE[opcode as usize]);
 
         // Indirect dispatch via function pointer table
         dispatch_indirect(state, opcode, empty_registry)?;
@@ -78,6 +92,11 @@ pub fn run_with_natives(state: &mut VmState, registry: &NativeRegistry) -> VmRes
 
         // Fetch opcode
         let opcode = state.read_u8()?;
+        // 动态剖析：两条执行循环都必须计数，否则走 run_with_natives 的负载
+        // 会静默统计成 0，测出来的「指令数」根本不是真实执行条数。
+        #[cfg(feature = "prof")]
+        crate::prof::tally(crate::build_config::OPCODE_DECODE[opcode as usize]);
+
 
         // Indirect dispatch via function pointer table
         // This replaces the switch-case pattern for better obfuscation

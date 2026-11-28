@@ -39,6 +39,8 @@ whitebox_lite = []
 # Experimental: Async VM engine for anti-analysis (state machine obfuscation)
 # Adds ~100 lines, no external dependencies. Custom micro-executor.
 async_vm = []
+# 动态性能剖析：统计每条指令实际执行多少次（默认关闭，零运行时开销）
+prof = []
 
 [profile.dev.build-override]
 opt-level = 2
@@ -52,3 +54,26 @@ lto = "fat"       # En agresif link-time optimization
 codegen-units = 1 # Paralel derlemeyi kapat, boyutu küçült
 panic = "abort"   # Panic kodlarını at
 opt-level = "z"   # Boyut odaklı optimizasyon ("s" yerine "z" daha agresif)
+
+[[bench]]
+name = "vm_workloads"
+harness = false
+
+[[bench]]
+name = "real_world"
+harness = false
+
+[[bench]]
+name = "call_overhead"
+harness = false
+
+[profile.bench]
+opt-level = 3
+
+[[bench]]
+name = "bottleneck"
+harness = false
+
+[[bench]]
+name = "prof_split"
+harness = false

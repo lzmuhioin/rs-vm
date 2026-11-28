@@ -1,0 +1,83 @@
+//! 动态指令剖析：统计运行期每条指令真正执行了多少次。
+//!
+//! 只由 `prof` 特性启用（非默认），普通构建完全不参与编译，零开销。
+//! 用法：`AEGIS_PROF=1 cargo bench --features prof --bench real_world`，
+//! 或测试里直接调 `prof::dump()`。
+
+use core::cell::RefCell;
+
+thread_local! {
+    static HIST: RefCell<[u64; 256]> = const { RefCell::new([0; 256]) };
+}
+
+/// 记录一条指令的执行（`opcode` 为解密后的 base opcode）。
+#[inline(always)]
+pub fn tally(opcode: u8) {
+    HIST.with(|h| h.borrow_mut()[opcode as usize] += 1);
+}
+
+/// 打印直方图，按次数降序。
+pub fn dump() {
+    let mut rows: Vec<(u8, u64)> = HIST.with(|h| {
+        h.borrow()
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n > 0)
+            .map(|(op, n)| (op as u8, *n))
+            .collect()
+    });
+    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    let total: u64 = rows.iter().map(|r| r.1).sum();
+    println!("=== 动态执行分布（共 {total} 条）===");
+    println!("{:<8}{:>14}{:>9}", "编号", "执行次数", "占比");
+    for (op, n) in rows.iter().take(15) {
+        println!(
+            "0x{op:02X}{:>8}{n:>14}{:>8.1}%",
+            "",
+            *n as f64 / total as f64 * 100.0
+        );
+    }
+}
+
+/// 查某条 base opcode 的执行次数。
+pub fn count(base_opcode: u8) -> u64 {
+    HIST.with(|h| h.borrow()[base_opcode as usize])
+}
+
+/// 扣掉保护层注入的 NOP 之后的指令总数。
+///
+/// 为什么不能直接用 `total()` 比性能：`emit_op` 的 NOP 注入与死代码插入都以
+/// `bytecode.len()` 当熵，**任何字节长度变化都会全局重排注入点**，实测 1 字节改动能让
+/// 执行条数漂 15%。NOP 是唯一能在直方图里单独认出来的注入（有独立 opcode），
+/// 先把它扣掉，剩下的才是编译器自己发的指令——比较改动时用这个口径。
+///
+/// 局限要写清楚：死代码插入的 `PUSH_IMM8 x; DROP` 与真实指令无法区分，扣不掉；
+/// 所以它只能压低噪声，不能完全消除。判小改动仍应配合 ABBA 计时。
+pub fn total_without_junk() -> u64 {
+    let nop = count(crate::build_config::opcodes::special::NOP);
+    total().saturating_sub(nop)
+}
+
+/// 已统计的指令总数（= 直方图各项之和）。
+pub fn total() -> u64 {
+    HIST.with(|h| h.borrow().iter().sum())
+}
+
+/// 统计「栈搬运类指令」的占比，返回 (搬运条数, 总条数)。
+///
+/// 搬运类 = PUSH_IMM(0x01) / PUSH_IMM8(0x02) / PUSH_REG(0x03) /
+/// POP_REG(0x04) / DUP(0x05) / DROP(0x07)。
+pub fn stack_share() -> (u64, u64) {
+    const MOVES: [usize; 6] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x07];
+    HIST.with(|h| {
+        let b = h.borrow();
+        let total: u64 = b.iter().sum();
+        let moves: u64 = MOVES.iter().map(|op| b[*op]).sum();
+        (moves, total)
+    })
+}
+
+/// 清空直方图（每个负载测前调用，避免互相污染）。
+pub fn reset() {
+    HIST.with(|h| h.borrow_mut().fill(0));
+}

@@ -49,6 +49,14 @@ pub fn handle_native_read(state: &mut VmState) -> VmResult<()> {
     state.push(value)
 }
 
+/// NATIVE_READ_REG: 直接把 input[offset] 读进寄存器，省掉 `PUSH; POP_REG` 两次栈操作。
+pub fn handle_native_read_reg(state: &mut VmState) -> VmResult<()> {
+    let reg = state.read_u8()?;
+    let offset = state.read_u16()? as usize;
+    let value = state.read_input_u64(offset)?;
+    state.set_reg(reg, value)
+}
+
 /// NATIVE_WRITE: Write to output buffer
 pub fn handle_native_write(state: &mut VmState) -> VmResult<()> {
     let _offset = state.read_u16()?;

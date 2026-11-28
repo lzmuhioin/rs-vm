@@ -214,6 +214,40 @@ impl Compiler {
         }
     }
 
+    /// 语句级「值被丢弃」的编译。
+    ///
+    /// 原来所有带分号的语句都是 `compile_expr(); emit_drop();`，
+    /// 赋值语句因此先压一次结果再丢掉——实测 locals_heavy 每次调用有 20 次 DUP、63 次 DROP，
+    /// 大头就在这儿。赋值本来就是把值写进寄存器，根本不需要经过栈。
+    pub(crate) fn compile_expr_discarded(&mut self, expr: &Expr) -> Result<(), CompileError> {
+        match expr {
+            Expr::Assign(assign) => self.compile_assignment(&assign.left, &assign.right),
+            // 复合赋值（`sum += w`）同理：它也是写寄存器，不需要把结果压栈再丢。
+            Expr::Binary(binary)
+                if matches!(
+                    binary.op,
+                    BinOp::AddAssign(_)
+                        | BinOp::SubAssign(_)
+                        | BinOp::MulAssign(_)
+                        | BinOp::DivAssign(_)
+                        | BinOp::RemAssign(_)
+                        | BinOp::BitXorAssign(_)
+                        | BinOp::BitAndAssign(_)
+                        | BinOp::BitOrAssign(_)
+                        | BinOp::ShlAssign(_)
+                        | BinOp::ShrAssign(_)
+                ) =>
+            {
+                self.compile_assign_op(&binary.left, &binary.op, &binary.right)
+            }
+            _ => {
+                self.compile_expr(expr)?;
+                self.emit_drop();
+                Ok(())
+            }
+        }
+    }
+
     /// Compile simple assignment: x = expr
     pub(crate) fn compile_assignment(&mut self, target: &Expr, value: &Expr) -> Result<(), CompileError> {
         match target {
@@ -226,10 +260,17 @@ impl Compiler {
                 let name = path.path.segments[0].ident.to_string();
                 match self.get_var_location(&name) {
                     Some(VarLocation::Register(reg)) => {
-                        // 超级指令路径：`x = a + b` / `x = x * k` 直接落到寄存器，
-                        // 省掉 PUSH;PUSH;OP;POP 三条 dispatch。不适用则回退栈路径。
-                        if self.can_expr_to_reg(value) {
-                            self.compile_expr_to_reg(value, reg)?;
+                        // `x = a op b` 直接落到目标寄存器。
+                        //
+                        // 原来只认 `can_expr_to_reg`（右操作数必须是常量或变量），
+                        // `x = x ^ a` 因此掉进 `compile_expr`：那里为了满足「栈上留一个值」
+                        // 的契约，会在寄存器算完之后再 PUSH 一次，外面再 POP 回变量——
+                        // 实测每次赋值白扔 2 条指令（PUSH_REG + POP_REG）。
+                        // 改用 try_expr_to_reg 的全或无语义：能全程寄存器就一步到位，
+                        // 不能就整体回滚走老路径，不会留下半成品。
+                        if self.reg_fastpath_supported(value) && self.try_expr_to_reg(value, reg).is_some()
+                        {
+                            // 已完成
                         } else {
                             self.compile_expr(value)?;
                             self.emit_pop_reg(reg);

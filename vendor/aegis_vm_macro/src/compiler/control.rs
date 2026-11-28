@@ -286,8 +286,9 @@ impl Compiler {
                     self.register_struct_from_item(item_struct)?;
                 }
                 syn::Stmt::Expr(expr, _) => {
-                    self.compile_expr(expr)?;
-                    self.emit_drop();  // Always drop expression result
+                    // 循环体/普通块里的语句：值整体丢弃。
+                    // 赋值语句直接落到寄存器，不必先压栈再 DROP。
+                    self.compile_expr_discarded(expr)?;
                 }
                 syn::Stmt::Local(local) => {
                     self.compile_local(local)?;
@@ -337,13 +338,11 @@ impl Compiler {
                 }
                 syn::Stmt::Expr(expr, Some(_)) => {
                     // Expression with semicolon - drop result
-                    self.compile_expr(expr)?;
-                    self.emit_drop();
+                    self.compile_expr_discarded(expr)?;
                 }
                 syn::Stmt::Expr(expr, None) => {
                     // Expression without semicolon in middle - drop anyway
-                    self.compile_expr(expr)?;
-                    self.emit_drop();
+                    self.compile_expr_discarded(expr)?;
                 }
                 syn::Stmt::Local(local) => {
                     self.compile_local(local)?;
@@ -376,8 +375,7 @@ impl Compiler {
                 }
                 syn::Stmt::Expr(expr, Some(_)) => {
                     // Expression with semicolon - drop and push unit
-                    self.compile_expr(expr)?;
-                    self.emit_drop();
+                    self.compile_expr_discarded(expr)?;
                     self.emit_zero();
                 }
                 syn::Stmt::Local(local) => {

@@ -11,9 +11,329 @@ use crate::substitution::{
     ControlFlowSubstitution,
 };
 
+/// 一条轨迹项。用枚举而不是「opcode + 伪 op 值」，是因为 `0xFD/0xFE` 本身就是真实
+/// opcode（HALT_ERR 等），拿它们当伪标记会把真指令渲染成 LABEL —— 又一个假象来源。
+#[derive(Clone)]
+pub(crate) enum TraceItem {
+    /// 真实指令：offset 是它在字节码里的**真实起始位置**（不是累加和）
+    Op { offset: usize, op: u8, operands: Vec<u8> },
+    /// 标签落点（不占字节）
+    Label { offset: usize, name: String },
+    /// 加密常量链：整段记一条，bytes 是被加密的原始值
+    EncConst { offset: usize, bytes: [u8; 8] },
+    /// 保护层注入（NOP / 死代码 / 不透明谓词）：占字节但没有源码语义
+    Injected { offset: usize, len: usize },
+}
+
+thread_local! {
+    /// 本次编译发射的压栈、弹栈条数（线程局部：测试并行，全局变量会被兄弟用例污染）。
+    static STACK_PUSHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static STACK_POPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
+    /// AEGIS_DUMP 用的指令流轨迹：(base opcode, 操作数字节)。
+    /// 只记录**逻辑指令**——emit_op 里注入的 NOP / 死代码不经过 `emit`，
+    /// 因此不会污染操作数，读出来的序列就是源码语义的那一份。
+    static TRACE: std::cell::RefCell<Vec<TraceItem>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// 轨迹已覆盖到的字节位置。任何新记录落在它之后，中间那段就是注入物。
+    static TRACE_END: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// 清空指令流轨迹；每个函数编译开始时由 `compile_function_full` 调用。
+pub(crate) fn trace_reset() {
+    TRACE.with(|t| t.borrow_mut().clear());
+    TRACE_END.with(|c| c.set(0));
+}
+
+/// 所有轨迹写入的唯一收口点：先把「上一段结束 → 本次起点」之间的字节记成注入段。
+/// 只在 dump 打开时走。
+fn push_item(item: TraceItem) {
+    let start = match &item {
+        TraceItem::Op { offset, .. }
+        | TraceItem::Label { offset, .. }
+        | TraceItem::EncConst { offset, .. }
+        | TraceItem::Injected { offset, .. } => *offset,
+    };
+    TRACE.with(|t| {
+        let mut v = t.borrow_mut();
+        let end = TRACE_END.with(|c| c.get());
+        if start > end {
+            v.push(TraceItem::Injected { offset: end, len: start - end });
+        }
+        v.push(item);
+        let new_end = match v.last() {
+            Some(TraceItem::Op { offset, operands, .. }) => offset + 1 + operands.len(),
+            Some(TraceItem::Injected { offset, len }) => offset + len,
+            Some(TraceItem::Label { offset, .. }) => *offset,
+            Some(TraceItem::EncConst { offset, .. }) => *offset,
+            None => end,
+        };
+        TRACE_END.with(|c| c.set(new_end));
+    });
+}
+
+/// 把一条轨迹按「偏移 OP 操作数」打印出来（仅 AEGIS_DUMP=1 时输出）。
+/// opcode → 助记符。由 `opcodes.rs` 的常量表生成（不手写，避免抄错）。
+fn mnemonic(op: u8) -> &'static str {
+    match op {
+        0x00 => "JCC_Z",
+        0x01 => "PUSH_IMM",
+        0x02 => "PUSH_IMM8",
+        0x03 => "PUSH_REG",
+        0x04 => "POP_REG",
+        0x05 => "DUP",
+        0x06 => "SWAP",
+        0x07 => "DROP",
+        0x08 => "PUSH_IMM16",
+        0x09 => "PUSH_IMM32",
+        0x10 => "MOV_IMM",
+        0x11 => "MOV_REG",
+        0x12 => "LOAD_MEM",
+        0x13 => "STORE_MEM",
+        0x20 => "ADD",
+        0x21 => "SUB",
+        0x22 => "MUL",
+        0x23 => "XOR",
+        0x24 => "AND",
+        0x25 => "OR",
+        0x26 => "SHL",
+        0x27 => "SHR",
+        0x28 => "NOT",
+        0x29 => "ROL",
+        0x2A => "ROR",
+        0x2B => "INC",
+        0x2C => "DEC",
+        0x30 => "CMP",
+        0x31 => "JMP",
+        0x32 => "JZ",
+        0x33 => "JNZ",
+        0x34 => "JGT",
+        0x35 => "JLT",
+        0x36 => "JGE",
+        0x37 => "JLE",
+        0x38 => "CALL",
+        0x39 => "RET",
+        0x40 => "NOP",
+        0x41 => "NOP_N",
+        0x42 => "OPAQUE_TRUE",
+        0x43 => "OPAQUE_FALSE",
+        0x44 => "HASH_CHECK",
+        0x45 => "TIMING_CHECK",
+        0x46 => "DIV",
+        0x47 => "MOD",
+        0x48 => "IDIV",
+        0x49 => "IMOD",
+        0x50 => "SEXT8",
+        0x51 => "SEXT16",
+        0x52 => "SEXT32",
+        0x53 => "TRUNC8",
+        0x54 => "TRUNC16",
+        0x55 => "TRUNC32",
+        0x60 => "LOAD8",
+        0x61 => "LOAD16",
+        0x62 => "LOAD32",
+        0x63 => "LOAD64",
+        0x64 => "STORE8",
+        0x65 => "STORE16",
+        0x66 => "STORE32",
+        0x67 => "STORE64",
+        0x70 => "HEAP_ALLOC",
+        0x71 => "HEAP_FREE",
+        0x72 => "HEAP_LOAD8",
+        0x73 => "HEAP_LOAD16",
+        0x74 => "HEAP_LOAD32",
+        0x75 => "HEAP_LOAD64",
+        0x76 => "HEAP_STORE8",
+        0x77 => "HEAP_STORE16",
+        0x78 => "HEAP_STORE32",
+        0x79 => "HEAP_STORE64",
+        0x7A => "HEAP_SIZE",
+        0x80 => "VEC_NEW",
+        0x81 => "VEC_LEN",
+        0x82 => "VEC_CAP",
+        0x83 => "VEC_PUSH",
+        0x84 => "VEC_POP",
+        0x85 => "VEC_GET",
+        0x86 => "VEC_SET",
+        0x87 => "VEC_REPEAT",
+        0x88 => "VEC_CLEAR",
+        0x89 => "VEC_RESERVE",
+        0x90 => "STR_NEW",
+        0x91 => "STR_LEN",
+        0x92 => "STR_PUSH",
+        0x93 => "STR_GET",
+        0x94 => "STR_SET",
+        0x95 => "STR_CMP",
+        0x96 => "STR_EQ",
+        0x97 => "STR_HASH",
+        0x98 => "STR_CONCAT",
+        0x9B => "CMP_REG_REG_JGE",
+        0x9C => "INC_REG",
+        0x9D => "ADD_REG_IMM",
+        0x9E => "ADD_REG_REG",
+        0x9F => "MUL_REG_IMM",
+        0xA0 => "MUL_REG_REG",
+        0xA1 => "CMP_REG_REG_JCC",
+        0xA2 => "XOR_REG_REG",
+        0xA3 => "SHR_REG_IMM",
+        0xA4 => "XOR_REG_IMM",
+        0xA5 => "AND_REG_REG",
+        0xA6 => "AND_REG_IMM",
+        0xA7 => "NATIVE_READ_REG",
+        0xF0 => "NATIVE_CALL",
+        0xF1 => "NATIVE_READ",
+        0xF2 => "NATIVE_WRITE",
+        0xF3 => "INPUT_LEN",
+        0xFE => "HALT_ERR",
+        0xFF => "HALT",
+        0xFD => "CONST_ENC",
+        0xFE => "LABEL",
+        _ => "?",
+    }
+}
+pub(crate) fn trace_dump(func: &str, shift: usize) {
+    if std::env::var_os("AEGIS_DUMP").is_none() {
+        return;
+    }
+    // shift = 多态 pass 在函数**开头**插入的字节数。它后面的内容原样复制，
+    // 所以所有偏移整体 +shift 就是最终镜像里的真实位置。
+    // 之前 dump 的是「发射阶段」的中间产物，落点与实际执行差 shift 字节，
+    // 静态栈平衡分析因此永远对不上运行时——这是那串误判的总根源。
+    eprintln!("=== fn {func} === 前缀 junk {shift} 字节");
+    TRACE.with(|t| {
+        let trace = t.borrow();
+        // 覆盖度自检：真实偏移不连续，就说明有字节没被记录。
+        // 这是这套工具的**自我否认机制**——前三次误判都是「以为没有那条指令」，
+        // 有了这行输出，漏记会自己显形，不必再靠人去怀疑工具。
+        let mut prev_end = 0usize;
+        for (idx, item) in trace.iter().enumerate() {
+            match item {
+                TraceItem::Op { offset, op, operands } => {
+                    let offset = &(*offset + shift);
+                    if *offset > prev_end {
+                        eprintln!(
+                            "  {idx:>3} {prev_end:>4}  -- [未记录 {} 字节]",
+                            offset - prev_end
+                        );
+                    }
+                    let hex: String = operands.iter().map(|b| format!("{b:02x}")).collect();
+                    eprintln!("  {idx:>3} {offset:>4}  {op:02X} {:<16} {hex}", mnemonic(*op));
+                    prev_end = offset + 1 + operands.len();
+                }
+                TraceItem::Label { offset, name } => {
+                    let offset = &(*offset + shift);
+                    if *offset > prev_end {
+                        eprintln!(
+                            "  {idx:>3} {prev_end:>4}  -- [未记录 {} 字节]",
+                            offset - prev_end
+                        );
+                        prev_end = *offset;
+                    }
+                    eprintln!("  {idx:>3} {offset:>4}  -- LABEL {name}");
+                }
+                TraceItem::Injected { offset, len } => {
+                    let offset = &(*offset + shift);
+                    eprintln!("  {idx:>3} {offset:>4}  -- [注入 {len} 字节]");
+                }
+                TraceItem::EncConst { offset, bytes } => {
+                    let offset = &(*offset + shift);
+                    if *offset > prev_end {
+                        eprintln!(
+                            "  {idx:>3} {prev_end:>4}  -- [未记录 {} 字节]",
+                            offset - prev_end
+                        );
+                    }
+                    eprintln!("  {idx:>3} {offset:>4}  -- CONST_ENC {bytes:02x?}");
+                }
+            }
+        }
+        let _ = prev_end;
+    });
+}
+
+/// 记录一条「绕过 emit_op 直接写进 bytecode」的指令。
+///
+/// 为什么要这个钩子：`ZeroSubstitution::emit_prefix` / `emit_original` 都是
+/// `bytecode.push(...)` 直写，不经过 emit_op，于是它们既不在轨迹里、也让轨迹里的偏移量
+/// 失去意义（偏移是记录的累加和，隐形字节不会计入）。缺了它们就无法做栈平衡核算——
+/// 实测正是靠这一点把「三路 if 的栈账」算错成 −1。
+/// 记录一次标签落点（伪指令，op = 0xFE，不占字节）。
+///
+/// 没有它就看不出 `JMP/JZ` 的落点：反汇编只有指令和相对偏移，
+/// 而「跳到哪一条」恰恰是判断控制流与栈平衡的关键。
+pub(crate) fn trace_label(offset: usize, name: &str) {
+    if std::env::var_os("AEGIS_DUMP").is_none() {
+        return;
+    }
+    push_item(TraceItem::Label { offset, name: name.to_string() });
+}
+
+pub(crate) fn trace_raw_at(offset: usize, op: u8, operands: &[u8]) {
+    if std::env::var_os("AEGIS_DUMP").is_none() {
+        return;
+    }
+    push_item(TraceItem::Op { offset, op, operands: operands.to_vec() });
+}
+
+/// 加密常量链：整段一条，不猜内部指令。
+pub(crate) fn trace_enc_const(offset: usize, value: u64) {
+    if std::env::var_os("AEGIS_DUMP").is_none() {
+        return;
+    }
+    push_item(TraceItem::EncConst { offset, bytes: value.to_le_bytes() });
+}
+
+/// 把操作数记到当前指令上。
+fn trace_operand(bytes: &[u8]) {
+    if std::env::var_os("AEGIS_DUMP").is_none() {
+        return;
+    }
+    TRACE.with(|t| {
+        // 注意：整段只能有**一次**可变借用——中间再 borrow() 会 panic
+        // （RefCell 已有可变借用时不允许再借），实测会把整个宏展开炸掉。
+        let mut end = None;
+        if let Some(TraceItem::Op { offset, operands, .. }) = t.borrow_mut().last_mut() {
+            operands.extend_from_slice(bytes);
+            end = Some(*offset + 1 + operands.len());
+        }
+        if let Some(e) = end {
+            TRACE_END.with(|c| c.set(e));
+        }
+    });
+}
+
+/// 清零，供测试在编译前调用。
+pub(crate) fn reset_stack_moves() {
+    STACK_PUSHES.with(|c| c.set(0));
+    STACK_POPS.with(|c| c.set(0));
+}
+
+/// 取本次编译发射的压栈/弹栈条数。
+pub(crate) fn stack_moves_emitted() -> u64 {
+    STACK_PUSHES.with(|c| c.get()) + STACK_POPS.with(|c| c.get())
+}
+
+/// 分别给出 (压栈次数, 弹栈次数)，用于判断搬运来自哪一侧。
+pub(crate) fn stack_moves_split() -> (u64, u64) {
+    (STACK_PUSHES.with(|c| c.get()), STACK_POPS.with(|c| c.get()))
+}
+/// 把栈搬运计数恢复到快照值：`try_expr_to_reg` 回滚时用（字节码截断了，计数也必须退）。
+pub(crate) fn restore_stack_moves(snapshot: (u64, u64)) {
+    STACK_PUSHES.with(|c| c.set(snapshot.0));
+    STACK_POPS.with(|c| c.set(snapshot.1));
+}
+
+
 impl Compiler {
     /// Emit an opcode (automatically encoded via shuffle table)
     pub(crate) fn emit_op(&mut self, base_opcode: u8) {
+        // 真实起点：在注入 NOP/死代码**之前**取，否则偏移会落在注入物上。
+        let trace_offset = self.bytecode.len();
+        // 指令流诊断：AEGIS_DUMP=1 时把每条 base opcode 打到 stderr，供
+        // ./scripts/vm-opcode-census.sh 统计构成。注意是**编译期**读取，
+        // 改环境变量后必须 touch 本文件强制重展开。
+        if std::env::var_os("AEGIS_DUMP").is_some() {
+            eprintln!("OP {base_opcode:02X} at {}", self.bytecode.len());
+        }
         // Dead Code Insertion
         if self.subst.is_enabled() {
             let table = self.opcode_table.clone();
@@ -30,29 +350,48 @@ impl Compiler {
             .wrapping_mul(0x5deece66d)
             .wrapping_add(0xb);
 
-        if (entropy % 100) < 10 {
+        if !crate::substitution::junk_disabled() && (entropy % 100) < 10 {
             let nop_shuffled = self.opcode_table.encode(special::NOP);
             self.bytecode.push(nop_shuffled);
         }
 
+        if std::env::var_os("AEGIS_DUMP").is_some() {
+            push_item(TraceItem::Op { offset: trace_offset, op: base_opcode, operands: Vec::new() });
+        }
+
+        // 注入段（NOP / 死代码）没有源码语义，但确实占字节。
+        // 不记就会出现「未记录 N 字节」的缺口，让人怀疑漏了真指令；
+        // 记成「注入」后，剩下的缺口只可能是真正的未知——自检才有效力。
         let shuffled = self.opcode_table.encode(base_opcode);
         self.bytecode.push(shuffled);
+
+        // 编译期栈平衡断言：逻辑指令的唯一出口在这里，栈账也记在这里
+        // （表在 compiler/stackcheck.rs，逐条对着 src/handlers 的实现核过）。
+        // 为什么不在每个 emit_* 助手里各写一行：助手大多是「一条 emit_op + 操作数」，
+        // 逐个加会在新助手出现时漏记，而这里既不会漏也不会重复计。
+        let delta = super::stackcheck::opcode_stack_effect(base_opcode);
+        self.stack_effect(delta);
     }
 
     /// Emit a single byte
     pub(crate) fn emit(&mut self, byte: u8) {
+        trace_operand(&[byte]);
         self.bytecode.push(byte);
     }
 
     /// Emit a u16 (little-endian)
     pub(crate) fn emit_u16(&mut self, value: u16) {
+        trace_operand(&value.to_le_bytes());
         self.bytecode.extend_from_slice(&value.to_le_bytes());
     }
 
     /// Emit jump with fixup
     pub(crate) fn emit_jump(&mut self, opcode: u8, label: &str) {
         // Opaque predicate injection (~15% chance)
-        if self.opaque_predicates_enabled && self.should_inject_opaque() {
+        if !crate::substitution::junk_disabled()
+            && self.opaque_predicates_enabled
+            && self.should_inject_opaque()
+        {
             let table = self.opcode_table.clone();
             let encode = |op: u8| table.encode(op);
             ControlFlowSubstitution::emit_fake_conditional(
@@ -62,10 +401,20 @@ impl Compiler {
             );
         }
 
+        // 栈平衡断言：把「跳过去时栈上该有几格」记下来。放在发指令之前，
+        // 偏移就是这条跳转自身的位置（跳转本身不动栈，前后深度一样）。
+        self.stack_expect_at(label);
+
         self.emit_op(opcode);
         let fixup_pos = self.pos();
         self.emit_u16(0); // Placeholder
         self.fixups.push((fixup_pos, label.to_string()));
+
+        // 无条件跳转之后的那段线性代码不会被执行，栈账从这儿断线，
+        // 到下一个标签落点才重新对齐（否则 if 的两个分支会被算成同一条路径）。
+        if opcode == control::JMP {
+            self.stack_end_path();
+        }
     }
 
     /// Emit fused loop condition: `CMP_REG_REG_JGE <a> <b> <i16 offset>`
@@ -73,6 +422,7 @@ impl Compiler {
     /// Equivalent to `PUSH_REG a; PUSH_REG b; CMP; DROP; DROP; JGE label`
     /// (stack-neutral, same flags) in a single dispatch.
     pub(crate) fn emit_cmp_reg_reg_jge(&mut self, a: u8, b: u8, label: &str) {
+        self.stack_expect_at(label);
         self.emit_op(control::CMP_REG_REG_JGE);
         self.emit(a);
         self.emit(b);
@@ -83,6 +433,7 @@ impl Compiler {
 
     /// Emit fused compare-and-branch: `CMP_REG_REG_JCC <a> <b> <cond> <i16 offset>`
     pub(crate) fn emit_cmp_reg_reg_jcc(&mut self, a: u8, b: u8, cond: u8, label: &str) {
+        self.stack_expect_at(label);
         self.emit_op(control::CMP_REG_REG_JCC);
         self.emit(a);
         self.emit(b);
@@ -123,6 +474,8 @@ impl Compiler {
             let variant = AddSubstitution::choose(&mut self.subst);
             variant.emit(&mut self.bytecode, &encode);
         }
+        // 直写字节：三个变体（ADD / a−(−b) / ~(~a−b)）都是「弹 2 压 1」，净 −1
+        self.stack_effect(-1);
     }
 
     /// Emit SUB instruction
@@ -136,6 +489,8 @@ impl Compiler {
             let variant = SubSubstitution::choose(&mut self.subst);
             variant.emit(&mut self.bytecode, &encode);
         }
+        // 同上：变体全部等价于「弹 2 压 1」
+        self.stack_effect(-1);
     }
 
     /// Emit MUL instruction
@@ -168,6 +523,8 @@ impl Compiler {
         if self.mba_enabled {
             let table = self.opcode_table.clone();
             self.mba.emit_xor(&mut self.bytecode, |op| table.encode(op));
+            // MBA 变体是直写字节（(x|y)&~(x&y) / (x&y)… 全是弹 2 压 1 的组合），净 −1
+            self.stack_effect(-1);
         } else {
             self.emit_op(arithmetic::XOR);
         }
@@ -188,6 +545,8 @@ impl Compiler {
         } else {
             AndSubstitution::emit_original(&mut self.bytecode, &encode);
         }
+        // 直写段：SWAP(0) + OR/AND(−1) + 三条 NOT(0)，净 −1；emit_not 自己已记 0
+        self.stack_effect(-1);
     }
 
     /// Emit OR instruction
@@ -205,6 +564,8 @@ impl Compiler {
         } else {
             OrSubstitution::emit_original(&mut self.bytecode, &encode);
         }
+        // 同 emit_and：直写段的净效果是「弹 2 压 1」
+        self.stack_effect(-1);
     }
 
     /// Emit NOT instruction
@@ -214,6 +575,8 @@ impl Compiler {
         let variant = NotSubstitution::choose(&mut self.subst);
         let needs_xor = variant.emit(&mut self.bytecode, &encode);
         if needs_xor {
+            // 直写了一条 PUSH_IMM（−1 的掩码常量），随后的 XOR 再 −1：合计净 0
+            self.stack_effect(1);
             self.emit_xor();
         }
     }
@@ -245,8 +608,12 @@ impl Compiler {
         let variant = IncSubstitution::choose(&mut self.subst);
         let (needs_add, needs_sub) = variant.emit(&mut self.bytecode, &encode);
         if needs_add {
+            // 直写了一条 PUSH_IMM8 1，随后的 ADD 再 −1：净 0（INC 本来就是「弹 1 压 1」）
+            self.stack_effect(1);
             self.emit_add();
         } else if needs_sub {
+            // 直写 PUSH_IMM −1，随后的 SUB 再 −1：同样净 0
+            self.stack_effect(1);
             self.emit_sub();
         }
     }
@@ -262,13 +629,18 @@ impl Compiler {
 
         if self.value_cryptor_enabled {
             self.value_cryptor.emit_encrypted_value(value, &mut self.bytecode, &encode);
+            // 直写段：先压加密常量（+1），再逐条解密指令——每条都是「压常量 + 二元运算」，净 0
+            self.stack_effect(1);
         } else if ConstantSubstitution::should_split(&mut self.subst, value) {
             let (a, b) = ConstantSubstitution::split(&mut self.subst, value);
             ConstantSubstitution::emit_value(&mut self.bytecode, a, &encode);
+            self.stack_effect(1); // 直写 PUSH
             ConstantSubstitution::emit_value(&mut self.bytecode, b, &encode);
-            self.emit_add();
+            self.stack_effect(1); // 直写 PUSH
+            self.emit_add(); // 自己记 −1：合计净 +1，和单条常量等价
         } else {
             ConstantSubstitution::emit_value(&mut self.bytecode, value, &encode);
+            self.stack_effect(1);
         }
     }
 
@@ -279,9 +651,12 @@ impl Compiler {
         if ZeroSubstitution::should_obfuscate(&mut self.subst) {
             let x = ZeroSubstitution::get_xor_value(&mut self.subst);
             ZeroSubstitution::emit_prefix(&mut self.bytecode, x, &encode);
+            // 直写段：PUSH_IMM8 x + DUP = +2，随后的 XOR −1 → 净 +1，与 emit_original 等价
+            self.stack_effect(2);
             self.emit_xor();
         } else {
             ZeroSubstitution::emit_original(&mut self.bytecode, &encode);
+            self.stack_effect(1); // 直写 PUSH_IMM8 0
         }
     }
 
@@ -339,13 +714,25 @@ impl Compiler {
     }
 
     /// Emit PUSH_REG instruction
+    #[track_caller]
     pub(crate) fn emit_push_reg(&mut self, reg: u8) {
+        STACK_PUSHES.with(|c| c.set(c.get() + 1));
+        // 栈搬运归因：AEGIS_STK=1 时打印调用点，供统计「谁在搬栈」。
+        if std::env::var_os("AEGIS_STK").is_some() {
+            eprintln!("STK PUSH {} {:?}", reg, std::panic::Location::caller());
+        }
         self.emit_op(stack::PUSH_REG);
         self.emit(reg);
     }
 
     /// Emit POP_REG instruction
+    #[track_caller]
     pub(crate) fn emit_pop_reg(&mut self, reg: u8) {
+        STACK_POPS.with(|c| c.set(c.get() + 1));
+        // 同上：AEGIS_STK=1 时打印调用点。
+        if std::env::var_os("AEGIS_STK").is_some() {
+            eprintln!("STK POP {} {:?}", reg, std::panic::Location::caller());
+        }
         self.emit_op(stack::POP_REG);
         self.emit(reg);
     }
@@ -482,6 +869,13 @@ impl Compiler {
     // =========================================================================
 
     /// Emit NATIVE_READ: Read from input buffer
+    /// NATIVE_READ_REG <reg:u8> <offset:u16>
+    pub(crate) fn emit_native_read_reg(&mut self, reg: u8, offset: u16) {
+        self.emit_op(control::NATIVE_READ_REG);
+        self.emit(reg);
+        self.emit_u16(offset);
+    }
+
     pub(crate) fn emit_native_read(&mut self, offset: u16) {
         self.emit_op(native::NATIVE_READ);
         self.emit_u16(offset);
@@ -493,6 +887,9 @@ impl Compiler {
         self.emit_op(native::NATIVE_CALL);
         self.emit(func_index);
         self.emit(arg_count);
+        // 栈账：弹掉 arg_count 个实参，压回 1 个返回值。参数个数是操作数，
+        // opcode 那张表看不见，所以在这里补记（表里 NATIVE_CALL 记的是 0）。
+        self.stack_effect(1 - arg_count as i32);
     }
 
     // =========================================================================
@@ -517,6 +914,7 @@ impl Compiler {
     pub(crate) fn emit_mov_imm(&mut self, dst: u8, value: u64) {
         self.emit_op(register::MOV_IMM);
         self.emit(dst);
+        trace_operand(&value.to_le_bytes());
         self.bytecode.extend_from_slice(&value.to_le_bytes());
     }
 
@@ -524,6 +922,7 @@ impl Compiler {
     pub(crate) fn emit_add_reg_imm(&mut self, dst: u8, imm: u32) {
         self.emit_op(control::ADD_REG_IMM);
         self.emit(dst);
+        trace_operand(&imm.to_le_bytes());
         self.bytecode.extend_from_slice(&imm.to_le_bytes());
     }
 
@@ -539,6 +938,7 @@ impl Compiler {
     pub(crate) fn emit_mul_reg_imm(&mut self, dst: u8, imm: u32) {
         self.emit_op(control::MUL_REG_IMM);
         self.emit(dst);
+        trace_operand(&imm.to_le_bytes());
         self.bytecode.extend_from_slice(&imm.to_le_bytes());
     }
 
@@ -548,5 +948,43 @@ impl Compiler {
         self.emit(dst);
         self.emit(a);
         self.emit(b);
+    }
+
+    pub(crate) fn emit_xor_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_op(control::XOR_REG_REG);
+        self.emit(dst);
+        self.emit(a);
+        self.emit(b);
+    }
+
+    pub(crate) fn emit_and_reg_reg(&mut self, dst: u8, a: u8, b: u8) {
+        self.emit_op(control::AND_REG_REG);
+        self.emit(dst);
+        self.emit(a);
+        self.emit(b);
+    }
+
+    pub(crate) fn emit_and_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_op(control::AND_REG_IMM);
+        self.emit(reg);
+        for b in imm.to_le_bytes() {
+            self.emit(b);
+        }
+    }
+
+    pub(crate) fn emit_xor_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_op(control::XOR_REG_IMM);
+        self.emit(reg);
+        for b in imm.to_le_bytes() {
+            self.emit(b);
+        }
+    }
+
+    pub(crate) fn emit_shr_reg_imm(&mut self, reg: u8, imm: u32) {
+        self.emit_op(control::SHR_REG_IMM);
+        self.emit(reg);
+        for b in imm.to_le_bytes() {
+            self.emit(b);
+        }
     }
 }
