@@ -45,21 +45,23 @@ pub struct FreeBlock {
 pub const MAX_STACK_SIZE: usize = 1024;
 
 /// 栈高水位（仅 debug 构建用于诊断，见 `push` 里的探针）。
-#[cfg(debug_assertions)]
+// 门控必须是「debug 且 std」：wasm 用 --no-default-features 走 no_std，
+// 那里既没有 thread_local! 也没有 eprintln!，只看 debug_assertions 会编不过。
+#[cfg(all(debug_assertions, feature = "std"))]
 static PROBE_MAX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 // 最近若干次压栈的「指令位置 + 栈深」环形缓冲（仅 debug）。
 // 为什么需要它：`ip` 配上最终反汇编就能读出真实执行流，这比任何静态推断可靠——
 // 静态分析在这条 bug 上已经连续给了多次「平衡」的错误结论。
 // 注意用 `//` 而不是 `///`：rustdoc 不为宏调用生成文档，`///` 会触发 unused_doc_comment。
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, feature = "std"))]
 thread_local! {
     static RING: std::cell::RefCell<std::collections::VecDeque<(usize, usize)>> =
         const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// 打印环形缓冲（溢出时自动调用，或测试里手动调用）。
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, feature = "std"))]
 pub fn dump_ring() {
     RING.with(|r| {
         let r = r.borrow();
@@ -371,14 +373,14 @@ impl<'a> VmState<'a> {
     #[inline]
     pub fn push(&mut self, value: u64) -> VmResult<()> {
         if self.stack.len() >= MAX_STACK_SIZE {
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, feature = "std"))]
             if std::env::var_os("AEGIS_RING").is_some() {
                 dump_ring();
             }
             return Err(VmError::StackOverflow);
         }
         self.stack.push(value);
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, feature = "std"))]
         {
             RING.with(|r| {
                 let mut r = r.borrow_mut();
@@ -392,7 +394,7 @@ impl<'a> VmState<'a> {
         // 「深度 + 指令位置」。为什么需要它：靠读反汇编判断栈平衡，我已经错了三次
         // ——那工具漏记直写字节，结论跟着错。运行时计数不会骗人。
         // release 下整段被 cfg 编掉，不留运行期开销。
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, feature = "std"))]
         {
             let depth = self.stack.len();
             if depth > PROBE_MAX.load(std::sync::atomic::Ordering::Relaxed) {
