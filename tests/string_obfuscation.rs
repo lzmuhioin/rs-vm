@@ -52,13 +52,28 @@ fn test_concat_strings() {
 
 #[test]
 fn test_repeated_calls_return_same_value() {
-    // Strings are decrypted each time (Box::leak creates new allocation)
-    // But values should be identical
+    // 解密结果只解一次并缓存，后续调用直接复用
     let msg1 = get_error_message(1);
     let msg2 = get_error_message(1);
 
     // Values should be equal (even if different allocations)
     assert_eq!(msg1, msg2);
+}
+
+#[test]
+fn test_repeated_calls_reuse_cached_allocation() {
+    // 判据：同一字符串字面量的两次调用必须返回同一块内存。
+    // 若每次调用都 Box::leak 一份副本，指针必然不同（已泄漏的块不会被回收），
+    // 于是循环里调用这个函数就会按调用次数线性泄漏。
+    let a = get_error_message(2);
+    let b = get_error_message(2);
+
+    assert!(!a.is_empty(), "空串的 into_boxed_str 不分配，指针相同属假阳性");
+    assert_eq!(
+        a.as_ptr(),
+        b.as_ptr(),
+        "同一字符串应命中缓存；指针不同说明每次调用都在新分配"
+    );
 }
 
 #[obfuscate_strings]

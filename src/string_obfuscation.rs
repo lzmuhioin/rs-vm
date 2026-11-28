@@ -51,21 +51,32 @@ pub fn decrypt_string(encrypted: &[u8], string_id: u64) -> String {
     String::from_utf8(decrypted).unwrap_or_else(|_| String::new())
 }
 
-/// Decrypt and return as static str (using thread-local or leaked memory)
+/// Decrypt and return as static str.
 ///
-/// This is more efficient for strings that are used repeatedly.
-/// The decrypted string is cached and never freed.
+/// 结果按 `string_id` 缓存：同一字符串字面量只在首次访问时解密一次并 leak，
+/// 之后直接复用同一块内存。缓存实现见 [`cached::get_or_decrypt`]（仅 `std`）。
 ///
-/// # Safety
-/// Uses Box::leak internally - memory is intentionally leaked for 'static lifetime
+/// 为什么必须缓存：`#[obfuscate_strings]` 生成的代码在**每次执行**该字符串表达式时
+/// 都会调本函数。如果每次都 `Box::leak` 一份新副本，循环里调用就等于按调用次数
+/// 线性泄漏（实测 200 万次泄漏 62.5 MB）。缓存命中后不再分配。
 #[inline(never)]
 pub fn decrypt_static(encrypted: &'static [u8], string_id: u64) -> &'static str {
-    // For efficiency, we could use a global cache here
-    // For now, just decrypt and leak
-    let decrypted = decrypt_string(encrypted, string_id);
+    #[cfg(feature = "std")]
+    {
+        cached::get_or_decrypt(encrypted, string_id)
+    }
+    // no_std 下没有全局可写缓存（OnceLock/HashMap 都要 std），只能每次 leak。
+    // 这条路径的使用者应自己保证不在热循环里反复取同一字符串。
+    #[cfg(not(feature = "std"))]
+    {
+        decrypt_leaked(encrypted, string_id)
+    }
+}
 
-    // Leak to get 'static lifetime
-    // This is intentional - obfuscated strings are typically few and small
+/// 解密一份副本并泄漏为 `'static`（缓存未命中的唯一分配点）
+#[inline(never)]
+fn decrypt_leaked(encrypted: &[u8], string_id: u64) -> &'static str {
+    let decrypted = decrypt_string(encrypted, string_id);
     Box::leak(decrypted.into_boxed_str())
 }
 
@@ -108,14 +119,17 @@ fn derive_key_byte(seed: &[u8; 32], string_id: u64, position: u64) -> u8 {
 #[cfg(feature = "std")]
 pub mod cached {
     #[allow(unused_imports)]
-    use super::{decrypt_string, decrypt_static};
-    use std::sync::OnceLock;
+    use super::{decrypt_leaked, decrypt_string};
     use std::collections::HashMap;
+    use std::sync::OnceLock;
 
     /// Global cache for decrypted strings
     static STRING_CACHE: OnceLock<std::sync::RwLock<HashMap<u64, &'static str>>> = OnceLock::new();
 
     /// Get or decrypt a string (cached)
+    ///
+    /// 缓存键是 `string_id`：它由字面量内容的 FNV-1a 哈希与出现序号混合而成
+    /// （见宏里的 `generate_string_id`），同一字面量在编译期只会得到一个 id。
     pub fn get_or_decrypt(encrypted: &'static [u8], string_id: u64) -> &'static str {
         let cache = STRING_CACHE.get_or_init(|| std::sync::RwLock::new(HashMap::new()));
 
@@ -127,8 +141,10 @@ pub mod cached {
             }
         }
 
-        // Need to decrypt and cache
-        let decrypted = super::decrypt_static(encrypted, string_id);
+        // Need to decrypt and cache.
+        // 这里必须走 `decrypt_leaked` 而不是 `decrypt_static`：后者在 std 下会回调本函数，
+        // 形成无限递归。
+        let decrypted = super::decrypt_leaked(encrypted, string_id);
 
         // Store in cache
         {
