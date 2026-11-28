@@ -48,6 +48,28 @@ pub const MAX_STACK_SIZE: usize = 1024;
 #[cfg(debug_assertions)]
 static PROBE_MAX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+// 最近若干次压栈的「指令位置 + 栈深」环形缓冲（仅 debug）。
+// 为什么需要它：`ip` 配上最终反汇编就能读出真实执行流，这比任何静态推断可靠——
+// 静态分析在这条 bug 上已经连续给了多次「平衡」的错误结论。
+// 注意用 `//` 而不是 `///`：rustdoc 不为宏调用生成文档，`///` 会触发 unused_doc_comment。
+#[cfg(debug_assertions)]
+thread_local! {
+    static RING: std::cell::RefCell<std::collections::VecDeque<(usize, usize)>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// 打印环形缓冲（溢出时自动调用，或测试里手动调用）。
+#[cfg(debug_assertions)]
+pub fn dump_ring() {
+    RING.with(|r| {
+        let r = r.borrow();
+        eprintln!("RING ({} 条压栈, ip/depth):", r.len());
+        for (ip, depth) in r.iter() {
+            eprintln!("  ip={ip:>4} depth={depth}");
+        }
+    });
+}
+
 /// Maximum instructions per execution (prevent infinite loops)
 pub const MAX_INSTRUCTIONS: u64 = 1_000_000;
 
@@ -349,9 +371,23 @@ impl<'a> VmState<'a> {
     #[inline]
     pub fn push(&mut self, value: u64) -> VmResult<()> {
         if self.stack.len() >= MAX_STACK_SIZE {
+            #[cfg(debug_assertions)]
+            if std::env::var_os("AEGIS_RING").is_some() {
+                dump_ring();
+            }
             return Err(VmError::StackOverflow);
         }
         self.stack.push(value);
+        #[cfg(debug_assertions)]
+        {
+            RING.with(|r| {
+                let mut r = r.borrow_mut();
+                if r.len() >= 64 {
+                    r.pop_front();
+                }
+                r.push_back((self.ip, self.stack.len()));
+            });
+        }
         // 栈高水位探针（仅 debug 构建）：`AEGIS_STKPROBE=1` 时每次刷新高水位就打一行
         // 「深度 + 指令位置」。为什么需要它：靠读反汇编判断栈平衡，我已经错了三次
         // ——那工具漏记直写字节，结论跟着错。运行时计数不会骗人。

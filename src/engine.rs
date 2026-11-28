@@ -44,7 +44,17 @@ pub fn run_with_native_table(state: &mut VmState) -> VmResult<()> {
         }
 
         // Fetch opcode
+        // release 下不定义，避免 clippy 报「未使用变量」
+        #[cfg(debug_assertions)]
+        let trace_ip = state.ip;
         let opcode = state.read_u8()?;
+        // 全指令跟踪（仅 debug）：`AEGIS_TRACEALL=1` 时把每条**已执行**指令和当时的栈深打出来。
+        // 为什么不只用环形缓冲：环缓冲只记压栈点，看不出「哪一条之后深度不降」。
+        // 小 n（4~6）时整段执行流只有几十条，直接读即可，不需要任何关于语义的假设。
+        #[cfg(debug_assertions)]
+        if std::env::var_os("AEGIS_TRACEALL").is_some() {
+            eprintln!("TRACE ip={trace_ip:>4} op={opcode:02X} sp={}", state.stack.len());
+        }
 
         // 动态剖析：只统计，不改执行路径。
         #[cfg(feature = "prof")]

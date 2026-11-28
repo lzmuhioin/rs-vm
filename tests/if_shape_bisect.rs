@@ -177,3 +177,10 @@ fn t_f_loop_only() {
     };
     assert_eq!(f_loop_only(N), expect);
 }
+
+/// 小 n 全程跟踪：配合 `AEGIS_TRACEALL=1` 把整个循环的执行流打出来，
+/// 逐条看「哪一条之后栈深只增不降」。n=4 时只有几十条，不用靠推断。
+#[test]
+fn t_small_trace() {
+    let _ = b_two_way(4);
+}
