@@ -252,31 +252,45 @@ impl NativeCallCollector {
     pub fn generate_conversion_helper() -> TokenStream {
         quote! {
             // Convert any type to u64
+            //
+            // native ABI 只有 64 位通道，而且值是按位拷贝过去的。因此两类返回值
+            // 都无法安全跨 VM 传递，必须在编译期拒绝：
+            //  - 大小 > 8 字节：原实现用 `Box::into_raw(boxed) as u64` 把 host 指针
+            //    塞进 u64。它既泄漏内存（VM 侧没有回收协议），又无法使用 ——
+            //    VM 会把这个 host 指针当成自己的堆地址，读它时报 HeapOutOfBounds。
+            //    实测：`let s = make_string(n); s.len()` 直接 E04: E19。
+            //  - 需要 Drop 但 <= 8 字节（如 `Box<u8>`）：`mem::forget` 会把它的
+            //    堆内存漏掉。
             #[inline(always)]
             fn __to_u64<T>(value: T) -> u64 {
-                // Handle common types
-                let size = std::mem::size_of::<T>();
-                if size == 0 {
-                    // Unit type ()
+                const {
+                    assert!(
+                        core::mem::size_of::<T>() <= 8,
+                        "aegis_vm: 原生调用返回的类型超过 8 字节，64 位 ABI 承载不了。\
+                         请改返回 u64（例如 `s.len() as u64`）。\
+                         旧的 Box::into_raw 兜底会泄漏内存，且该指针不能被当作 VM 堆地址使用。"
+                    );
+                    assert!(
+                        !core::mem::needs_drop::<T>() || core::mem::size_of::<T>() == 0,
+                        "aegis_vm: 原生调用返回了需要 Drop 的所有权类型，跨 64 位通道传递时\
+                         它会被 mem::forget 掉并泄漏。请改返回 u64 或 Copy 类型。"
+                    );
+                }
+                // 编译期断言已经保证 size <= 8；ZST（unit 等）直接给 0。
+                if core::mem::size_of::<T>() == 0 {
                     return 0;
                 }
-                if size <= 8 {
-                    // Fits in u64 - direct transmute
-                    let mut result = 0u64;
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            &value as *const T as *const u8,
-                            &mut result as *mut u64 as *mut u8,
-                            size,
-                        );
-                    }
-                    std::mem::forget(value);
-                    result
-                } else {
-                    // Larger types - return pointer (leaks memory, but safe for now)
-                    let boxed = Box::new(value);
-                    Box::into_raw(boxed) as u64
+                let mut result = 0u64;
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        &value as *const T as *const u8,
+                        &mut result as *mut u64 as *mut u8,
+                        core::mem::size_of::<T>(),
+                    );
                 }
+                // 值已被按位拷进 result，防止 T 的析构再释放一次
+                core::mem::forget(value);
+                result
             }
 
             // Convert u64 back to bool
@@ -358,5 +372,35 @@ mod tests {
         let collector = NativeCallCollector::new();
         assert_eq!(collector.len(), 0);
         assert!(!collector.has_calls());
+    }
+
+    /// 生成代码不得再出现「把 host 指针塞进 u64」的兜底。
+    ///
+    /// 这条断言替代不了编译失败测试（仓库没有 trybuild，且 `.stderr` 快照会随
+    /// rustc 版本腐烂），但它锁住了泄漏的根因：只要装箱调用回到生成代码里，
+    /// 测试就红。
+    ///
+    /// 注意只查**调用形状**（`into_raw (` / `Box :: new (`）：断言文案里本身会
+    /// 提到这两个名字来解释「为什么不允许」，查裸词会误判自己。
+    #[test]
+    fn conversion_helper_never_leaks_host_pointers() {
+        let emitted = NativeCallCollector::generate_conversion_helper().to_string();
+        assert!(
+            !emitted.contains("into_raw ("),
+            "生成的 __to_u64 里重新出现了 into_raw 调用：>8 字节返回值会再次泄漏"
+        );
+        assert!(
+            !emitted.contains("Box :: new ("),
+            "生成的 __to_u64 里重新出现了 Box::new 调用：说明又在堆上装箱"
+        );
+        // 编译期拦截必须存在，且同时覆盖「太大」与「需要 Drop」两种
+        assert!(emitted.contains("size_of"), "缺少 size_of 编译期断言");
+        assert!(emitted.contains("needs_drop"), "缺少 needs_drop 编译期断言");
+        assert!(emitted.contains("assert !"), "编译期断言未生成");
+        // 用户看到的报错文案必须讲清「改返回 u64」，否则等于让人猜
+        assert!(
+            emitted.contains("请改返回 u64"),
+            "编译期断言的文案丢失了迁移指引"
+        );
     }
 }
