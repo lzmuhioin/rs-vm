@@ -125,7 +125,12 @@ pub fn handle_vec_new(state: &mut VmState) -> VmResult<()> {
     // Calculate total size: header + (capacity * elem_size)
     let data_size = capacity.checked_mul(elem_size)
         .ok_or(VmError::HeapOutOfMemory)?;
-    let total_size = VEC_HEADER_SIZE as u64 + data_size;
+    // `24 + data_size` 也会回绕：data_size 接近 u64::MAX 时总和变成 < 24，
+    // 于是 heap_alloc 只给一个小块，header 里却写进巨大的 capacity，
+    // 后续 VEC_PUSH 就能越过自己的块覆盖相邻堆块的头。
+    let total_size = (VEC_HEADER_SIZE as u64)
+        .checked_add(data_size)
+        .ok_or(VmError::HeapOutOfMemory)?;
 
     // Allocate on heap
     let vec_addr = state.heap_alloc(total_size as usize)? as usize;
@@ -257,7 +262,10 @@ pub fn handle_vec_repeat(state: &mut VmState) -> VmResult<()> {
     // Calculate total size
     let data_size = count.checked_mul(elem_size)
         .ok_or(VmError::HeapOutOfMemory)?;
-    let total_size = VEC_HEADER_SIZE as u64 + data_size;
+    // 同 VEC_NEW：`24 + data_size` 回绕会让「容量谎报」，必须 checked
+    let total_size = (VEC_HEADER_SIZE as u64)
+        .checked_add(data_size)
+        .ok_or(VmError::HeapOutOfMemory)?;
 
     // Allocate on heap
     let vec_addr = state.heap_alloc(total_size as usize)? as usize;

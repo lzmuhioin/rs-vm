@@ -3,7 +3,7 @@
 //! CMP, JMP, JZ, JNZ, JGT, JLT, JGE, JLE, CALL, RET
 
 use crate::error::{VmError, VmResult};
-use crate::state::VmState;
+use crate::state::{VmState, MAX_CALL_DEPTH};
 
 /// CMP: Compare top two stack values, set flags
 pub fn handle_cmp(state: &mut VmState) -> VmResult<()> {
@@ -105,9 +105,15 @@ pub fn jump_relative(state: &mut VmState, offset: i16) -> VmResult<()> {
 /// CALL: Call subroutine
 pub fn handle_call(state: &mut VmState) -> VmResult<()> {
     let offset = state.read_i16()?;
-    // Push return address
-    state.call_stack.push(state.ip);
-    jump_relative(state, offset)
+    if state.call_stack.len() >= MAX_CALL_DEPTH {
+        return Err(VmError::StackOverflow);
+    }
+    let return_addr = state.ip;
+    jump_relative(state, offset)?;
+    // 跳转有效才记账：否则一次失败的 CALL 会在 call_stack 上留一条死记录，
+    // 既占用深度配额，也让 RET 跳到错误的地址
+    state.call_stack.push(return_addr);
+    Ok(())
 }
 
 /// RET: Return from subroutine

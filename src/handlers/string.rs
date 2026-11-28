@@ -66,7 +66,11 @@ pub fn handle_str_new(state: &mut VmState) -> VmResult<()> {
     let capacity = state.pop()?;
 
     // Calculate total size: header + capacity bytes
-    let total_size = VEC_HEADER_SIZE as u64 + capacity;
+    // 必须 checked：capacity 来自栈上的 u64，`24 + capacity` 回绕会让分配器只给一小块
+    // 而 header 里写进巨大的 capacity，后续 STR_PUSH 就能越过本块覆盖相邻堆块。
+    let total_size = (VEC_HEADER_SIZE as u64)
+        .checked_add(capacity)
+        .ok_or(VmError::HeapOutOfMemory)?;
 
     // Allocate on heap
     let str_addr = state.heap_alloc(total_size as usize)? as usize;
@@ -235,7 +239,10 @@ pub fn handle_str_concat(state: &mut VmState) -> VmResult<()> {
         .ok_or(VmError::HeapOutOfMemory)?;
 
     // Allocate new string
-    let total_size = VEC_HEADER_SIZE as u64 + new_len;
+    // 同 STR_NEW：`24 + new_len` 也可能回绕（new_len 已 checked_add，但还没加 header）
+    let total_size = (VEC_HEADER_SIZE as u64)
+        .checked_add(new_len)
+        .ok_or(VmError::HeapOutOfMemory)?;
     let new_addr = state.heap_alloc(total_size as usize)? as usize;
 
     // Initialize header

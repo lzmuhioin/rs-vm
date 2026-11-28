@@ -28,6 +28,17 @@ const ALLOCATED_FLAG: u64 = 0x8000_0000_0000_0000;
 /// Mask to extract actual size from header (clear MSB)
 const SIZE_MASK: u64 = !ALLOCATED_FLAG;
 
+/// 判断 `[addr, addr + len)` 是否完全落在容量为 `cap` 的缓冲区里。
+///
+/// 为什么不能写成 `addr + len > cap`：`addr` 由字节码从栈上取 u64 后 `as usize` 得到，
+/// 完全可控。`addr = usize::MAX - 3` 时 `addr + 8` 在 release 下回绕成 4，
+/// `4 > cap` 为假 ⇒ 检查被绕过，随后 `buf[addr]` 越界 panic。
+/// 在 `panic = "abort"` 的 release profile 里，一次越界索引就是进程终止。
+#[inline]
+fn fits(addr: usize, len: usize, cap: usize) -> bool {
+    addr.checked_add(len).is_some_and(|end| end <= cap)
+}
+
 /// Represents a free block in the heap
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FreeBlock {
@@ -43,6 +54,13 @@ pub struct FreeBlock {
 
 /// Maximum stack size (entries, not bytes)
 pub const MAX_STACK_SIZE: usize = 1024;
+
+/// 调用栈最大深度（条目数）。
+///
+/// 没有这个上限时，`CALL` 递归只受 `MAX_INSTRUCTIONS`(1,000,000) 约束 ——
+/// 实测死递归能压到 1,000,000 条返回地址（≈7.9 MiB）才停。取 1024 与值栈同量级：
+/// 每一层 VM 调用最终都对应一层 Rust 调用，再深也会先撞宿主栈。
+pub const MAX_CALL_DEPTH: usize = 1024;
 
 /// 栈高水位（仅 debug 构建用于诊断，见 `push` 里的探针）。
 // 门控必须是「debug 且 std」：wasm 用 --no-default-features 走 no_std，
@@ -481,10 +499,17 @@ impl<'a> VmState<'a> {
     /// Alignment is guaranteed to be 8-byte aligned
     #[inline]
     pub fn heap_alloc(&mut self, size: usize) -> VmResult<u64> {
-        // Align user size to 8 bytes
-        let aligned_user_size = (size + 7) & !7;
+        // Align user size to 8 bytes.
+        // `size` 来自字节码栈上的 u64，`size + 7` 会回绕：u64::MAX-7 时对齐后变成 0，
+        // 于是「请求了几乎全部地址空间」被当成 0 字节分配放行。必须 checked。
+        let aligned_user_size = size
+            .checked_add(7)
+            .ok_or(VmError::HeapOutOfMemory)?
+            & !7;
         // Total size includes header
-        let total_size = ALLOC_HEADER_SIZE + aligned_user_size;
+        let total_size = ALLOC_HEADER_SIZE
+            .checked_add(aligned_user_size)
+            .ok_or(VmError::HeapOutOfMemory)?;
 
         // Strategy 1: Try to find a suitable block in free list (first-fit)
         if let Some(idx) = self.find_free_block(total_size) {
@@ -493,7 +518,7 @@ impl<'a> VmState<'a> {
 
             // Write header with size + ALLOCATED_FLAG
             let header = (total_size as u64) | ALLOCATED_FLAG;
-            self.heap_write_u64_internal(block.addr, header);
+            self.heap_write_u64_internal(block.addr, header)?;
 
             // If block is significantly larger, split it
             let remaining = block.size - total_size;
@@ -509,7 +534,10 @@ impl<'a> VmState<'a> {
         }
 
         // Strategy 2: Bump allocate from end
-        let new_ptr = self.heap_ptr + total_size;
+        let new_ptr = self
+            .heap_ptr
+            .checked_add(total_size)
+            .ok_or(VmError::HeapOutOfMemory)?;
         if new_ptr > self.heap_limit {
             return Err(VmError::HeapOutOfMemory);
         }
@@ -522,7 +550,7 @@ impl<'a> VmState<'a> {
         // Write header with size + ALLOCATED_FLAG
         let block_addr = self.heap_ptr;
         let header = (total_size as u64) | ALLOCATED_FLAG;
-        self.heap_write_u64_internal(block_addr, header);
+        self.heap_write_u64_internal(block_addr, header)?;
 
         // User address is after header
         let user_addr = block_addr + ALLOC_HEADER_SIZE;
@@ -539,11 +567,19 @@ impl<'a> VmState<'a> {
             .position(|block| block.size >= total_size)
     }
 
-    /// Internal write for header (bypasses bounds check since we're writing to new area)
+    /// Internal write for a block header.
+    ///
+    /// 曾经注释写「bypasses bounds check since we're writing to new area」——那是错的：
+    /// 它同样被 Free-List 复用路径和 heap_free 调用，而块地址可能来自被篡改的 header。
+    /// 越界写会让 `heap[addr..addr+8]` 直接 panic，所以这里必须检查。
     #[inline]
-    fn heap_write_u64_internal(&mut self, addr: usize, value: u64) {
+    fn heap_write_u64_internal(&mut self, addr: usize, value: u64) -> VmResult<()> {
+        if !fits(addr, 8, self.heap.len()) {
+            return Err(VmError::HeapOutOfBounds);
+        }
         let bytes = value.to_le_bytes();
         self.heap[addr..addr + 8].copy_from_slice(&bytes);
+        Ok(())
     }
 
     /// Free a previously allocated block
@@ -573,8 +609,19 @@ impl<'a> VmState<'a> {
             return Err(VmError::HeapOutOfBounds);
         }
 
+        // 块尾必须落在 heap_ptr 以内。
+        // 只校验 `total_size <= heap_ptr` 不够：VM 程序可以用 HEAP_STORE64 改写块头，
+        // 伪造成 size 合法但 `header_addr + size` 越界的块；这种块一旦进了 free list，
+        // 后续分配会从它切出越过 heap 末尾的子块，再写 header 就是越界 panic。
+        let block_end = header_addr
+            .checked_add(total_size)
+            .ok_or(VmError::HeapOutOfBounds)?;
+        if block_end > self.heap_ptr {
+            return Err(VmError::HeapOutOfBounds);
+        }
+
         // Clear ALLOCATED_FLAG in header (mark as free)
-        self.heap_write_u64_internal(header_addr, total_size as u64);
+        self.heap_write_u64_internal(header_addr, total_size as u64)?;
 
         // Create free block and add to list with merge
         let new_block = FreeBlock {
@@ -657,7 +704,7 @@ impl<'a> VmState<'a> {
     /// Read u16 from heap (little-endian)
     #[inline]
     pub fn heap_read_u16(&self, addr: usize) -> VmResult<u16> {
-        if addr + 2 > self.heap.len() {
+        if !fits(addr, 2, self.heap.len()) {
             return Err(VmError::HeapOutOfBounds);
         }
         Ok(u16::from_le_bytes([self.heap[addr], self.heap[addr + 1]]))
@@ -666,7 +713,7 @@ impl<'a> VmState<'a> {
     /// Read u32 from heap (little-endian)
     #[inline]
     pub fn heap_read_u32(&self, addr: usize) -> VmResult<u32> {
-        if addr + 4 > self.heap.len() {
+        if !fits(addr, 4, self.heap.len()) {
             return Err(VmError::HeapOutOfBounds);
         }
         Ok(u32::from_le_bytes([
@@ -680,7 +727,7 @@ impl<'a> VmState<'a> {
     /// Read u64 from heap (little-endian)
     #[inline]
     pub fn heap_read_u64(&self, addr: usize) -> VmResult<u64> {
-        if addr + 8 > self.heap.len() {
+        if !fits(addr, 8, self.heap.len()) {
             return Err(VmError::HeapOutOfBounds);
         }
         Ok(u64::from_le_bytes([
@@ -709,7 +756,7 @@ impl<'a> VmState<'a> {
     /// Write u16 to heap (little-endian)
     #[inline]
     pub fn heap_write_u16(&mut self, addr: usize, value: u16) -> VmResult<()> {
-        if addr + 2 > self.heap.len() {
+        if !fits(addr, 2, self.heap.len()) {
             return Err(VmError::HeapOutOfBounds);
         }
         let bytes = value.to_le_bytes();
@@ -720,7 +767,7 @@ impl<'a> VmState<'a> {
     /// Write u32 to heap (little-endian)
     #[inline]
     pub fn heap_write_u32(&mut self, addr: usize, value: u32) -> VmResult<()> {
-        if addr + 4 > self.heap.len() {
+        if !fits(addr, 4, self.heap.len()) {
             return Err(VmError::HeapOutOfBounds);
         }
         let bytes = value.to_le_bytes();
@@ -731,7 +778,7 @@ impl<'a> VmState<'a> {
     /// Write u64 to heap (little-endian)
     #[inline]
     pub fn heap_write_u64(&mut self, addr: usize, value: u64) -> VmResult<()> {
-        if addr + 8 > self.heap.len() {
+        if !fits(addr, 8, self.heap.len()) {
             return Err(VmError::HeapOutOfBounds);
         }
         let bytes = value.to_le_bytes();
@@ -742,7 +789,7 @@ impl<'a> VmState<'a> {
     /// Write bytes to heap
     #[inline]
     pub fn heap_write_bytes(&mut self, addr: usize, data: &[u8]) -> VmResult<()> {
-        if addr + data.len() > self.heap.len() {
+        if !fits(addr, data.len(), self.heap.len()) {
             return Err(VmError::HeapOutOfBounds);
         }
         self.heap[addr..addr + data.len()].copy_from_slice(data);
@@ -752,7 +799,7 @@ impl<'a> VmState<'a> {
     /// Read bytes from heap
     #[inline]
     pub fn heap_read_bytes(&self, addr: usize, len: usize) -> VmResult<&[u8]> {
-        if addr + len > self.heap.len() {
+        if !fits(addr, len, self.heap.len()) {
             return Err(VmError::HeapOutOfBounds);
         }
         Ok(&self.heap[addr..addr + len])
